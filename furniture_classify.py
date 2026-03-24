@@ -106,9 +106,9 @@ def classify_furniture(
     threshold: float = 0.0,
 ) -> None:
     """
-    input_dir  : 存放所有待分类透明 PNG 的文件夹（只扫描顶层文件）
-    output_dir : 分类结果输出目录，会自动创建子文件夹
-    threshold  : 置信度阈值，低于此值归入 "uncertain" 文件夹，0 表示不过滤
+    input_dir  : 根目录，递归扫描所有子目录中的 PNG
+    output_dir : 输出目录，按原始子目录结构镜像，文件名追加类别后缀（如 item_sofa.png）
+    threshold  : 置信度阈值，低于此值文件名追加 _uncertain，0 表示不过滤
     """
     input_dir = Path(input_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -118,11 +118,8 @@ def classify_furniture(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 只扫描顶层 PNG（大小写均兼容）
-    images = sorted(
-        p for p in input_dir.iterdir()
-        if p.is_file() and p.suffix.lower() == ".png"
-    )
+    # 递归扫描所有子目录中的 PNG
+    images = sorted(p for p in input_dir.rglob("*.png") if p.is_file())
     if not images:
         print("未找到任何 PNG 文件，请检查输入目录。")
         return
@@ -147,9 +144,10 @@ def classify_furniture(
             if threshold > 0 and confidence < threshold:
                 category = "uncertain"
 
-            dest_dir = output_dir / category
-            dest_dir.mkdir(exist_ok=True)
-            shutil.move(str(img_path), dest_dir / img_path.name)
+            dest_dir = output_dir / img_path.parent.relative_to(input_dir)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            new_name = f"{img_path.stem}_{category}{img_path.suffix}"
+            shutil.copy2(img_path, dest_dir / new_name)
 
             stats[category] = stats.get(category, 0) + 1
             tqdm.write(f"  {img_path.name:<40}  →  {category}  ({confidence:.1%})")

@@ -634,7 +634,7 @@ def _run_classify(
             _classify_queue.put({"type": "error", "message": f"输入目录不存在：{input_dir}"})
             return
 
-        images = sorted(p for p in inp.iterdir() if p.is_file() and p.suffix.lower() == ".png")
+        images = sorted(p for p in inp.rglob("*.png") if p.is_file())
         if not images:
             _classify_queue.put({"type": "error", "message": "未找到任何 PNG 文件"})
             return
@@ -681,9 +681,10 @@ def _run_classify(
                 confidence  = float(probs[best_idx].item())
                 category    = cat_names[best_idx] if confidence >= threshold else "uncertain"
 
-                dest_dir = out / category
-                dest_dir.mkdir(exist_ok=True)
-                shutil.move(str(img_path), dest_dir / img_path.name)
+                dest_dir = out / img_path.parent.relative_to(inp)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                new_name = f"{img_path.stem}_{category}{img_path.suffix}"
+                shutil.copy2(img_path, dest_dir / new_name)
 
                 stats[category] = stats.get(category, 0) + 1
 
