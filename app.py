@@ -634,9 +634,18 @@ def _run_classify(
             _classify_queue.put({"type": "error", "message": f"输入目录不存在：{input_dir}"})
             return
 
-        images = sorted(p for p in inp.rglob("*.png") if p.is_file())
+        images = sorted(
+            p for p in inp.rglob("*")
+            if p.is_file() and p.suffix.lower() == ".png"
+        )
         if not images:
-            _classify_queue.put({"type": "error", "message": "未找到任何 PNG 文件"})
+            all_files = [p for p in inp.rglob("*") if p.is_file()]
+            exts = sorted({p.suffix.lower() for p in all_files}) or ["（无文件）"]
+            _classify_queue.put({"type": "error", "message": (
+                f"在 {inp} 中未找到任何 PNG 文件。"
+                f"共扫描到 {len(all_files)} 个文件，"
+                f"扩展名：{', '.join(exts)}"
+            )})
             return
 
         _classify_queue.put({"type": "start", "total": len(images)})
