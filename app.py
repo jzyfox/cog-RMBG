@@ -16,6 +16,19 @@ from PIL import Image
 
 app = Flask(__name__)
 
+CATEGORIES_FILE = Path(__file__).parent / "categories.json"
+
+
+def _load_categories() -> list[dict]:
+    """读取已保存的分类配置，文件不存在时返回默认值。"""
+    if CATEGORIES_FILE.exists():
+        try:
+            return json.loads(CATEGORIES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return DEFAULT_CATEGORIES
+
+
 # ── 抠图任务状态 ──────────────────────────────────────────────────────────────
 _rmbg_queue: queue.Queue = queue.Queue()
 _rmbg_processing = False
@@ -190,10 +203,16 @@ HTML = """
     <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-3">
       <div class="flex items-center justify-between">
         <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">目标分类</h2>
-        <button onclick="addCategoryRow()"
-          class="text-xs text-indigo-400 hover:text-indigo-300 px-3 py-1 rounded-lg border border-indigo-800 hover:border-indigo-600 transition">
-          + 添加分类
-        </button>
+        <div class="flex gap-2">
+          <button id="save-cat-btn" onclick="saveCategories()"
+            class="text-xs text-green-400 hover:text-green-300 px-3 py-1 rounded-lg border border-green-900 hover:border-green-700 transition">
+            保存配置
+          </button>
+          <button onclick="addCategoryRow()"
+            class="text-xs text-indigo-400 hover:text-indigo-300 px-3 py-1 rounded-lg border border-indigo-800 hover:border-indigo-600 transition">
+            + 添加分类
+          </button>
+        </div>
       </div>
 
       <!-- 表头 -->
@@ -292,6 +311,28 @@ function getCategoriesFromUI() {
 
 // 初始化默认分类行
 DEFAULT_CATEGORIES.forEach(c => addCategoryRow(c.name, c.prompt));
+
+function saveCategories() {
+  const cats = getCategoriesFromUI();
+  if (cats.length === 0) { alert('请至少保留一个分类'); return; }
+  const btn = document.getElementById('save-cat-btn');
+  btn.textContent = '保存中...'; btn.disabled = true;
+  fetch('/classify/categories', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(cats)
+  })
+  .then(r => r.json())
+  .then(d => {
+    btn.textContent = `已保存 (${d.count} 项)`;
+    btn.className = btn.className.replace('text-green-400','text-white').replace('border-green-900','border-green-600');
+    setTimeout(() => {
+      btn.textContent = '保存配置';
+      btn.className = btn.className.replace('text-white','text-green-400').replace('border-green-600','border-green-900');
+      btn.disabled = false;
+    }, 2000);
+  })
+  .catch(() => { btn.textContent = '保存失败'; btn.disabled = false; });
+}
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
@@ -485,8 +526,16 @@ function addLog(areaId, text, cls) {
 # ──────────────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
-    from flask import render_template_string as rts
-    return rts(HTML, default_categories=DEFAULT_CATEGORIES)
+    return render_template_string(HTML, default_categories=_load_categories())
+
+
+@app.route("/classify/categories", methods=["POST"])
+def save_categories():
+    cats = request.json or []
+    if not isinstance(cats, list) or not cats:
+        return {"error": "分类列表为空"}, 400
+    CATEGORIES_FILE.write_text(json.dumps(cats, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"status": "saved", "count": len(cats)}
 
 
 # ── 抠图路由（原有逻辑不变）──────────────────────────────────────────────────
