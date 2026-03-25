@@ -1,7 +1,10 @@
+flask
+huggingface_hub
+numpy
+pillow
+scikit-image
 torch
 torchvision
-pillow
-numpy
+tqdm
+transformers
 typing
-scikit-image
-huggingface_hub

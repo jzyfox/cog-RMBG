@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>家具 AI 工具箱</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Inter','PingFang SC','Microsoft YaHei',sans-serif; }
+    .log-item { animation: fadeIn .15s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }
+    .progress-bar { transition: width .35s ease; }
+    input[type=text], input[type=number] {
+      background:#1f2937;
+      border:1px solid #374151;
+      border-radius:.5rem;
+      padding:.6rem 1rem;
+      font-size:.875rem;
+      color:#f3f4f6;
+      width:100%;
+      transition:box-shadow .15s;
+    }
+    input[type=text]:focus, input[type=number]:focus {
+      outline:none;
+      box-shadow:0 0 0 3px rgba(99,102,241,.3);
+    }
+    input[type=range] { accent-color:#6366f1; cursor:pointer; }
+    .tab-btn { transition: all .15s; }
+    .tab-btn.active { background:#312e81; color:#c7d2fe; border-color:#4338ca; }
+    .cat-row input, .scale-row input { padding:.45rem .75rem; font-size:.8rem; }
+  </style>
+</head>
+<body class="bg-gray-950 min-h-screen text-gray-100 flex flex-col">
+<header class="border-b border-gray-800 px-8 py-4 flex items-center gap-3">
+  <div class="w-8 h-8 rounded-lg bg-indigo-500 flex items-center justify-center font-bold text-sm">AI</div>
+  <h1 class="text-base font-semibold tracking-tight">家具 AI 工具箱</h1>
+  <nav class="ml-6 flex gap-2 flex-wrap">
+    <button id="tab-clean-btn" onclick="switchTab('clean')" class="tab-btn active text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">Hero 清洗</button>
+    <button id="tab-rmbg-btn" onclick="switchTab('rmbg')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">批量抠图</button>
+    <button id="tab-classify-btn" onclick="switchTab('classify')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">图片分类</button>
+    <button id="tab-catalog-btn" onclick="switchTab('catalog')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">资产拼图</button>
+  </nav>
+  <span id="status-badge" class="ml-auto text-xs px-3 py-1 rounded-full bg-gray-800 text-gray-400">空闲</span>
+</header>
+
+<main class="flex-1 px-6 py-6 max-w-4xl mx-auto w-full">
+  <div id="panel-clean" class="flex flex-col gap-5">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">Hero 图片清洗</h2>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输入文件夹 <span class="text-gray-600">（递归扫描品牌 / 型号子文件夹）</span></label>
+        <input id="clean-input-dir" type="text" placeholder="例如：J:/furniture_library" />
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">边缘检测宽度</label>
+          <input id="clean-edge-width" type="number" value="{{ default_clean_edge_width }}" min="1" step="1" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">边缘亮度阈值</label>
+          <input id="clean-edge-threshold" type="number" value="{{ default_clean_edge_threshold }}" min="0" max="255" step="1" />
+        </div>
+      </div>
+      <div class="text-xs text-gray-500 leading-6 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
+        每个含图片的子文件夹会自动创建 <span class="font-mono text-gray-300">_excluded</span>。
+        程序先用边缘白底检测快速剔除场景图，再用 <span class="font-mono text-gray-300">openai/clip-vit-base-patch32</span>
+        区分全貌产品照和局部特写照。
+      </div>
+      <button id="clean-start-btn" onclick="startClean()" class="bg-sky-600 hover:bg-sky-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h18M6 12h12M9 17h6"/></svg>
+        <span>开始清洗 Hero 图片</span>
+      </button>
+    </div>
+    <div id="clean-progress-card" class="hidden bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">清洗进度</h2>
+        <span id="clean-progress-text" class="text-sm text-gray-400">0 / 0</span>
+      </div>
+      <div class="bg-gray-800 rounded-full h-2 overflow-hidden"><div id="clean-progress-bar" class="progress-bar h-full bg-sky-500 rounded-full" style="width:0%"></div></div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="clean-stat-kept" class="text-2xl font-bold text-emerald-400">0</div><div class="text-xs text-gray-500 mt-1">保留</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="clean-stat-edge" class="text-2xl font-bold text-amber-400">0</div><div class="text-xs text-gray-500 mt-1">边缘剔除</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="clean-stat-clip" class="text-2xl font-bold text-violet-400">0</div><div class="text-xs text-gray-500 mt-1">CLIP 剔除</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="clean-stat-broken" class="text-2xl font-bold text-red-400">0</div><div class="text-xs text-gray-500 mt-1">损坏 / 异常</div></div>
+      </div>
+      <div id="clean-result-path" class="text-xs text-gray-500 break-all min-h-[1rem]"></div>
+      <div id="clean-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-56 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
+    </div>
+  </div>
+
+  <div id="panel-rmbg" class="hidden flex flex-col gap-5">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">目录设置</h2>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输入文件夹 <span class="text-gray-600">（含原始图片）</span></label>
+        <input id="rmbg-input-dir" type="text" placeholder="例如：J:/raw_images" />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输出文件夹 <span class="text-gray-600">（抠图结果）</span></label>
+        <input id="rmbg-output-dir" type="text" placeholder="例如：J:/rmbg_output" />
+      </div>
+      <button id="rmbg-start-btn" onclick="startRmbg()" class="mt-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span>开始处理</span>
+      </button>
+    </div>
+    <div id="rmbg-progress-card" class="hidden bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex justify-between items-center"><h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">处理进度</h2><span id="rmbg-progress-text" class="text-sm text-gray-400">0 / 0</span></div>
+      <div class="bg-gray-800 rounded-full h-2 overflow-hidden"><div id="rmbg-progress-bar" class="progress-bar h-full bg-indigo-500 rounded-full" style="width:0%"></div></div>
+      <div class="grid grid-cols-3 gap-3">
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="rmbg-stat-processed" class="text-2xl font-bold text-indigo-400">0</div><div class="text-xs text-gray-500 mt-1">已抠图</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="rmbg-stat-skipped" class="text-2xl font-bold text-green-400">0</div><div class="text-xs text-gray-500 mt-1">已跳过</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="rmbg-stat-error" class="text-2xl font-bold text-red-400">0</div><div class="text-xs text-gray-500 mt-1">失败</div></div>
+      </div>
+      <div id="rmbg-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-44 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
+    </div>
+  </div>
+
+  <div id="panel-classify" class="hidden flex flex-col gap-5">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">目录设置</h2>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输入文件夹 <span class="text-gray-600">（待分类的透明 PNG）</span></label>
+        <input id="cl-input-dir" type="text" placeholder="例如：J:/rmbg_output" />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输出文件夹 <span class="text-gray-600">（子文件夹将自动创建在这里）</span></label>
+        <input id="cl-output-dir" type="text" placeholder="例如：J:/classified_assets" />
+      </div>
+      <div class="flex flex-col gap-2">
+        <div class="flex justify-between">
+          <label class="text-sm text-gray-300">置信度阈值</label>
+          <span id="threshold-label" class="text-sm text-indigo-400 font-mono">0%（不过滤）</span>
+        </div>
+        <input id="cl-threshold" type="range" min="0" max="95" step="5" value="0" oninput="updateThresholdLabel(this.value)" class="w-full h-1.5 rounded-full" />
+        <p class="text-xs text-gray-600">低于阈值的图片将归入 <span class="text-gray-400">uncertain</span> 文件夹，方便人工复查。</p>
+      </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">目标分类</h2>
+        <div class="flex gap-2">
+          <button id="save-cat-btn" onclick="saveCategories()" class="text-xs text-green-400 hover:text-green-300 px-3 py-1 rounded-lg border border-green-900 hover:border-green-700 transition">保存配置</button>
+          <button onclick="addCategoryRow()" class="text-xs text-indigo-400 hover:text-indigo-300 px-3 py-1 rounded-lg border border-indigo-800 hover:border-indigo-600 transition">+ 添加分类</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-[160px_1fr_32px] gap-2 px-1">
+        <span class="text-xs text-gray-600">文件夹名称</span>
+        <span class="text-xs text-gray-600">CLIP 文本描述（英文，越具体越准）</span>
+        <span></span>
+      </div>
+      <div id="category-rows" class="flex flex-col gap-2"></div>
+    </div>
+    <button id="cl-start-btn" onclick="startClassify()" class="bg-violet-600 hover:bg-violet-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+      <span>开始分类</span>
+    </button>
+    <div id="cl-progress-card" class="hidden bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex justify-between items-center"><h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">分类进度</h2><span id="cl-progress-text" class="text-sm text-gray-400">0 / 0</span></div>
+      <div class="bg-gray-800 rounded-full h-2 overflow-hidden"><div id="cl-progress-bar" class="progress-bar h-full bg-violet-500 rounded-full" style="width:0%"></div></div>
+      <div id="cl-cat-stats" class="flex flex-wrap gap-2 min-h-[2rem]"></div>
+      <div id="cl-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
+    </div>
+  </div>
+
+  <div id="panel-catalog" class="hidden flex flex-col gap-5">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">资产拼图设置</h2>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输入文件夹 <span class="text-gray-600">（包含各个套餐子目录）</span></label>
+        <input id="cg-input-dir" type="text" placeholder="例如：J:/classified_assets" />
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输出文件夹 <span class="text-gray-600">（每个子文件夹会生成一张图）</span></label>
+        <input id="cg-output-dir" type="text" placeholder="例如：J:/catalog_grids" />
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div class="flex flex-col gap-1.5"><label class="text-sm text-gray-300">画布宽度</label><input id="cg-canvas-width" type="number" value="4096" min="512" step="256" /></div>
+        <div class="flex flex-col gap-1.5"><label class="text-sm text-gray-300">间距 Padding</label><input id="cg-padding" type="number" value="100" min="0" step="10" /></div>
+        <div class="flex flex-col gap-1.5"><label class="text-sm text-gray-300">全局倍率</label><input id="cg-global-scale" type="number" value="1.0" min="0.01" step="0.1" /></div>
+      </div>
+      <div class="text-xs text-gray-500 leading-6 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
+        每个子文件夹会单独生成一张 <span class="font-mono text-gray-300">子文件夹名_grid.png</span>。
+        文件名最后一个下划线后的后缀会被当作类别；内部基准宽度保留在
+        <span class="font-mono text-gray-300">asset_catalog_grid.py</span> 的
+        <span class="font-mono text-gray-300">BASE_WIDTHS_CM</span> 中。
+        前端只暴露更直观的 <span class="font-mono text-gray-300">全局倍率 + 类别 scale</span>。
+      </div>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">类别缩放表</h2>
+        <div class="flex gap-2">
+          <button id="save-scale-btn" onclick="saveCatalogScales()" class="text-xs text-emerald-400 hover:text-emerald-300 px-3 py-1 rounded-lg border border-emerald-900 hover:border-emerald-700 transition">保存配置</button>
+          <button onclick="addCatalogScaleRow()" class="text-xs text-indigo-400 hover:text-indigo-300 px-3 py-1 rounded-lg border border-indigo-800 hover:border-indigo-600 transition">+ 添加类别</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-[180px_120px_32px] gap-2 px-1">
+        <span class="text-xs text-gray-600">类别后缀</span>
+        <span class="text-xs text-gray-600">scale</span>
+        <span></span>
+      </div>
+      <div id="catalog-scale-rows" class="flex flex-col gap-2"></div>
+    </div>
+    <button id="cg-start-btn" onclick="startCatalog()" class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+      <span>开始生成资产网格图</span>
+    </button>
+    <div id="cg-progress-card" class="hidden bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex justify-between items-center"><h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">拼图进度</h2><span id="cg-progress-text" class="text-sm text-gray-400">0 / 0</span></div>
+      <div class="bg-gray-800 rounded-full h-2 overflow-hidden"><div id="cg-progress-bar" class="progress-bar h-full bg-emerald-500 rounded-full" style="width:0%"></div></div>
+      <div class="grid grid-cols-3 gap-3">
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-rendered" class="text-2xl font-bold text-emerald-400">0</div><div class="text-xs text-gray-500 mt-1">已处理</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-packages" class="text-2xl font-bold text-sky-400">0</div><div class="text-xs text-gray-500 mt-1">套餐数</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-default" class="text-2xl font-bold text-yellow-400">0</div><div class="text-xs text-gray-500 mt-1">默认配置</div></div>
+      </div>
+      <div id="cg-result-path" class="text-xs text-gray-500 break-all min-h-[1rem]"></div>
+      <div id="cg-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const DEFAULT_CATEGORIES = {{ default_categories | tojson }};
+const DEFAULT_CATALOG_SCALES = {{ default_catalog_scales | tojson }};
+function switchTab(tab) {
+  ['clean', 'rmbg', 'classify', 'catalog'].forEach(name => {
+    document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== tab);
+    document.getElementById(`tab-${name}-btn`).classList.toggle('active', name === tab);
+  });
+}
+
+function setStatus(text, cls) {
+  const badge = document.getElementById('status-badge');
+  badge.textContent = text;
+  badge.className = `ml-auto text-xs px-3 py-1 rounded-full ${cls}`;
+}
+
+function addLog(areaId, text, cls) {
+  const area = document.getElementById(areaId);
+  const line = document.createElement('div');
+  line.className = `log-item ${cls}`;
+  line.textContent = text;
+  area.appendChild(line);
+  area.scrollTop = area.scrollHeight;
+}
+
+function escHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function updateThresholdLabel(val) {
+  const value = parseInt(val, 10);
+  document.getElementById('threshold-label').textContent = value === 0 ? '0%（不过滤）' : `${value}%`;
+}
+
+function buildCategoryRow(name, prompt) {
+  const row = document.createElement('div');
+  row.className = 'cat-row grid grid-cols-[160px_1fr_32px] gap-2 items-center';
+  row.innerHTML = `
+    <input type="text" value="${escHtml(name)}" class="cat-name" placeholder="文件夹名" />
+    <input type="text" value="${escHtml(prompt)}" class="cat-prompt" placeholder="CLIP 文本描述（英文）" />
+    <button onclick="this.closest('.cat-row').remove()"
+      class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-600 hover:text-red-400 hover:bg-gray-800 transition text-lg leading-none">×</button>
+  `;
+  return row;
+}
+
+function addCategoryRow(name = '', prompt = '') {
+  document.getElementById('category-rows').appendChild(buildCategoryRow(name, prompt));
+}
+
+function getCategoriesFromUI() {
+  const items = [];
+  document.querySelectorAll('.cat-row').forEach(row => {
+    const name = row.querySelector('.cat-name').value.trim();
+    const prompt = row.querySelector('.cat-prompt').value.trim();
+    if (name && prompt) items.push({ name, prompt });
+  });
+  return items;
+}
+
+function buildCatalogScaleRow(name, scale) {
+  const row = document.createElement('div');
+  row.className = 'scale-row grid grid-cols-[180px_120px_32px] gap-2 items-center';
+  row.innerHTML = `
+    <input type="text" value="${escHtml(name)}" class="scale-name" placeholder="category" />
+    <input type="number" value="${scale ?? ''}" class="scale-value" min="0.01" step="0.1" placeholder="1.0" />
+    <button onclick="this.closest('.scale-row').remove()"
+      class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-600 hover:text-red-400 hover:bg-gray-800 transition text-lg leading-none">×</button>
+  `;
+  return row;
+}
+
+function addCatalogScaleRow(name = '', scale = '1.0') {
+  document.getElementById('catalog-scale-rows').appendChild(buildCatalogScaleRow(name, scale));
+}
+
+function getCatalogScalesFromUI() {
+  const items = [];
+  const seenNames = new Set();
+  document.querySelectorAll('.scale-row').forEach(row => {
+    const name = row.querySelector('.scale-name').value.trim().toLowerCase();
+    const scaleRaw = row.querySelector('.scale-value').value.trim();
+    if (!name && !scaleRaw) return;
+    if (!name) throw new Error('类别缩放表中存在未填写类别后缀的行');
+    const scale = parseFloat(scaleRaw);
+    if (!Number.isFinite(scale) || scale <= 0) {
+      throw new Error(`类别 ${name} 的 scale 必须是大于 0 的数字`);
+    }
+    if (seenNames.has(name)) {
+      throw new Error(`类别 ${name} 重复，请保留一条`);
+    }
+    seenNames.add(name);
+    items.push({ name, scale });
+  });
+  return items;
+}
+
+function saveCategories() {
+  const cats = getCategoriesFromUI();
+  if (cats.length === 0) {
+    alert('请至少保留一个分类');
+    return;
+  }
+  const btn = document.getElementById('save-cat-btn');
+  btn.textContent = '保存中...';
+  btn.disabled = true;
+  fetch('/classify/categories', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cats),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      btn.textContent = `已保存 (${d.count} 项)`;
+      btn.className = btn.className.replace('text-green-400', 'text-white').replace('border-green-900', 'border-green-600');
+      setTimeout(() => {
+        btn.textContent = '保存配置';
+        btn.className = btn.className.replace('text-white', 'text-green-400').replace('border-green-600', 'border-green-900');
+        btn.disabled = false;
+      }, 2000);
+    })
+    .catch(err => {
+      alert(err.message || '保存失败');
+      btn.textContent = '保存失败';
+      btn.disabled = false;
+    });
+}
+
+function saveCatalogScales() {
+  let items = [];
+  try {
+    items = getCatalogScalesFromUI();
+  } catch (err) {
+    alert(err.message || '缩放配置有误');
+    return;
+  }
+  const btn = document.getElementById('save-scale-btn');
+  btn.textContent = '保存中...';
+  btn.disabled = true;
+  fetch('/catalog/scales', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(items),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      btn.textContent = `已保存 (${d.count} 项)`;
+      btn.className = btn.className.replace('text-emerald-400', 'text-white').replace('border-emerald-900', 'border-emerald-600');
+      setTimeout(() => {
+        btn.textContent = '保存配置';
+        btn.className = btn.className.replace('text-white', 'text-emerald-400').replace('border-emerald-600', 'border-emerald-900');
+        btn.disabled = false;
+      }, 2000);
+    })
+    .catch(err => {
+      alert(err.message || '保存失败');
+      btn.textContent = '保存失败';
+      btn.disabled = false;
+    });
+}
+
+DEFAULT_CATEGORIES.forEach(item => addCategoryRow(item.name, item.prompt));
+DEFAULT_CATALOG_SCALES.forEach(item => addCatalogScaleRow(item.name, item.scale));
+updateThresholdLabel(document.getElementById('cl-threshold').value);
+
+let cleanEventSource = null;
+
+function startClean() {
+  const inputDir = document.getElementById('clean-input-dir').value.trim();
+  const edgeWidth = parseInt(document.getElementById('clean-edge-width').value, 10);
+  const edgeBrightnessThreshold = parseFloat(document.getElementById('clean-edge-threshold').value);
+  if (!inputDir) {
+    alert('请填写输入文件夹路径');
+    return;
+  }
+  if (!Number.isFinite(edgeWidth) || edgeWidth <= 0) {
+    alert('边缘检测宽度必须大于 0');
+    return;
+  }
+  if (!Number.isFinite(edgeBrightnessThreshold) || edgeBrightnessThreshold < 0 || edgeBrightnessThreshold > 255) {
+    alert('边缘亮度阈值必须在 0 到 255 之间');
+    return;
+  }
+
+  setCleanProcessing(true);
+  document.getElementById('clean-progress-card').classList.remove('hidden');
+  document.getElementById('clean-log').innerHTML = '';
+  document.getElementById('clean-result-path').textContent = '';
+  document.getElementById('clean-stat-kept').textContent = '0';
+  document.getElementById('clean-stat-edge').textContent = '0';
+  document.getElementById('clean-stat-clip').textContent = '0';
+  document.getElementById('clean-stat-broken').textContent = '0';
+  setCleanProgress(0, 0);
+
+  fetch('/clean/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: inputDir,
+      edge_width: edgeWidth,
+      edge_brightness_threshold: edgeBrightnessThreshold,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      listenClean();
+    })
+    .catch(err => {
+      alert(err.message || '启动失败');
+      setCleanProcessing(false);
+    });
+}
+
+function listenClean() {
+  if (cleanEventSource) cleanEventSource.close();
+  cleanEventSource = new EventSource('/clean/stream');
+  cleanEventSource.onmessage = function (e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+    if (msg.type === 'start') {
+      setCleanProgress(0, msg.total);
+      document.getElementById('clean-result-path').textContent = `清洗目录：${msg.input_dir}`;
+      cleanLog(`发现 ${msg.folders} 个文件夹，共 ${msg.total} 张图片，开始清洗...`, 'text-gray-400');
+    }
+    if (msg.type === 'folder') cleanLog(`=== ${msg.folder} === (${msg.count} 张)`, 'text-sky-400');
+    if (msg.type === 'log') cleanLog(msg.message, 'text-gray-500');
+    if (msg.type === 'progress') {
+      setCleanProgress(msg.current, msg.total);
+      document.getElementById('clean-stat-kept').textContent = msg.stats.kept;
+      document.getElementById('clean-stat-edge').textContent = msg.stats.excluded_edge;
+      document.getElementById('clean-stat-clip').textContent = msg.stats.excluded_clip;
+      document.getElementById('clean-stat-broken').textContent = msg.stats.broken;
+      if (msg.status === 'kept') {
+        const heroPct = msg.hero_score == null ? '--' : `${(msg.hero_score * 100).toFixed(0)}%`;
+        cleanLog(`✓ 保留  ${msg.file}  (Hero ${heroPct})`, 'text-emerald-400');
+      } else if (msg.status === 'excluded_edge') {
+        const brightness = msg.edge_brightness == null ? '--' : msg.edge_brightness.toFixed(1);
+        cleanLog(`→ 场景图  ${msg.file}  (边缘亮度 ${brightness})`, 'text-amber-400');
+      } else if (msg.status === 'excluded_clip') {
+        const detailPct = msg.detail_score == null ? '--' : `${(msg.detail_score * 100).toFixed(0)}%`;
+        cleanLog(`→ 特写图  ${msg.file}  (特写 ${detailPct})`, 'text-violet-400');
+      } else {
+        cleanLog(`✗ 损坏  ${msg.file}  — ${msg.message || '无法读取'}`, 'text-red-500');
+      }
+    }
+    if (msg.type === 'done') {
+      document.getElementById('clean-stat-kept').textContent = msg.kept;
+      document.getElementById('clean-stat-edge').textContent = msg.excluded_edge;
+      document.getElementById('clean-stat-clip').textContent = msg.excluded_clip;
+      document.getElementById('clean-stat-broken').textContent = msg.broken;
+      document.getElementById('clean-result-path').textContent = `清洗目录：${msg.input_dir}`;
+      cleanLog('────────────────────────────────────────', 'text-gray-700');
+      cleanLog(`完成 · 保留 ${msg.kept}  边缘剔除 ${msg.excluded_edge}  CLIP 剔除 ${msg.excluded_clip}  异常 ${msg.broken}`, 'text-white');
+      cleanLog(`处理文件夹：${msg.folders}  设备：${msg.device}`, 'text-gray-300');
+      setStatus('完成', 'bg-green-900 text-green-400');
+      setCleanProcessing(false);
+      cleanEventSource.close();
+    }
+    if (msg.type === 'error') {
+      cleanLog(`错误：${msg.message}`, 'text-red-400');
+      setStatus('出错', 'bg-red-900 text-red-400');
+      setCleanProcessing(false);
+      cleanEventSource.close();
+    }
+  };
+}
+
+function setCleanProgress(current, total) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  document.getElementById('clean-progress-bar').style.width = `${pct}%`;
+  document.getElementById('clean-progress-text').textContent = `${current} / ${total}`;
+}
+
+function setCleanProcessing(active) {
+  const btn = document.getElementById('clean-start-btn');
+  btn.disabled = active;
+  btn.querySelector('span').textContent = active ? '正在清洗 Hero 图片...' : '开始清洗 Hero 图片';
+  if (active) setStatus('清洗中', 'bg-sky-900 text-sky-300');
+  else if (document.getElementById('status-badge').textContent === '清洗中') setStatus('空闲', 'bg-gray-800 text-gray-400');
+}
+
+function cleanLog(text, cls) { addLog('clean-log', text, cls); }
+
+let rmbgEventSource = null;
+function startRmbg() {
+  const inputDir = document.getElementById('rmbg-input-dir').value.trim();
+  const outputDir = document.getElementById('rmbg-output-dir').value.trim();
+  if (!inputDir || !outputDir) {
+    alert('请填写输入和输出文件夹路径');
+    return;
+  }
+  setRmbgProcessing(true);
+  document.getElementById('rmbg-progress-card').classList.remove('hidden');
+  document.getElementById('rmbg-log').innerHTML = '';
+  setRmbgProgress(0, 0);
+  document.getElementById('rmbg-stat-processed').textContent = '0';
+  document.getElementById('rmbg-stat-skipped').textContent = '0';
+  document.getElementById('rmbg-stat-error').textContent = '0';
+  fetch('/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input_dir: inputDir, output_dir: outputDir }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      listenRmbg();
+    })
+    .catch(err => {
+      alert(err.message || '启动失败');
+      setRmbgProcessing(false);
+    });
+}
+
+function listenRmbg() {
+  if (rmbgEventSource) rmbgEventSource.close();
+  rmbgEventSource = new EventSource('/stream');
+  rmbgEventSource.onmessage = function (e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+    if (msg.type === 'start') {
+      rmbgLog(`发现 ${msg.total} 张图片，开始处理...`, 'text-gray-500');
+      setRmbgProgress(0, msg.total);
+    }
+    if (msg.type === 'log') rmbgLog(msg.message, 'text-gray-500');
+    if (msg.type === 'progress') {
+      setRmbgProgress(msg.current, msg.total);
+      document.getElementById('rmbg-stat-processed').textContent = msg.stats.processed;
+      document.getElementById('rmbg-stat-skipped').textContent = msg.stats.skipped;
+      document.getElementById('rmbg-stat-error').textContent = msg.stats.error;
+      const color = msg.status === 'skipped' ? 'text-green-500' : msg.status === 'error' ? 'text-red-500' : 'text-indigo-400';
+      const icon = msg.status === 'skipped' ? '→ 跳过' : msg.status === 'error' ? '✗ 失败' : '✓ 完成';
+      rmbgLog(`${icon}  ${msg.file}`, color);
+    }
+    if (msg.type === 'error_item') rmbgLog(`✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+    if (msg.type === 'done') {
+      const stats = msg.stats;
+      rmbgLog('────────────────────────────────────────', 'text-gray-700');
+      rmbgLog(`完成 · 抠图 ${stats.processed}  跳过 ${stats.skipped}  失败 ${stats.error}`, 'text-white');
+      setStatus('完成', 'bg-green-900 text-green-400');
+      setRmbgProcessing(false);
+      rmbgEventSource.close();
+    }
+    if (msg.type === 'error') {
+      rmbgLog(`错误：${msg.message}`, 'text-red-400');
+      setStatus('出错', 'bg-red-900 text-red-400');
+      setRmbgProcessing(false);
+      rmbgEventSource.close();
+    }
+  };
+}
+
+function setRmbgProgress(current, total) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  document.getElementById('rmbg-progress-bar').style.width = `${pct}%`;
+  document.getElementById('rmbg-progress-text').textContent = `${current} / ${total}`;
+}
+
+function setRmbgProcessing(active) {
+  const btn = document.getElementById('rmbg-start-btn');
+  btn.disabled = active;
+  btn.querySelector('span').textContent = active ? '处理中...' : '开始处理';
+  if (active) setStatus('处理中', 'bg-indigo-900 text-indigo-300');
+  else if (document.getElementById('status-badge').textContent === '处理中') setStatus('空闲', 'bg-gray-800 text-gray-400');
+}
+
+function rmbgLog(text, cls) { addLog('rmbg-log', text, cls); }
+
+let clEventSource = null;
+function startClassify() {
+  const inputDir = document.getElementById('cl-input-dir').value.trim();
+  const outputDir = document.getElementById('cl-output-dir').value.trim();
+  const threshold = parseInt(document.getElementById('cl-threshold').value, 10) / 100;
+  const categories = getCategoriesFromUI();
+  if (!inputDir || !outputDir) {
+    alert('请填写输入和输出文件夹路径');
+    return;
+  }
+  if (categories.length === 0) {
+    alert('请至少添加一个分类');
+    return;
+  }
+  setClProcessing(true);
+  document.getElementById('cl-progress-card').classList.remove('hidden');
+  document.getElementById('cl-log').innerHTML = '';
+  document.getElementById('cl-cat-stats').innerHTML = '';
+  setClProgress(0, 0);
+  fetch('/classify/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input_dir: inputDir, output_dir: outputDir, threshold, categories }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      listenClassify();
+    })
+    .catch(err => {
+      alert(err.message || '启动失败');
+      setClProcessing(false);
+    });
+}
+
+function listenClassify() {
+  if (clEventSource) clEventSource.close();
+  clEventSource = new EventSource('/classify/stream');
+  clEventSource.onmessage = function (e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+    if (msg.type === 'start') {
+      clLog(`发现 ${msg.total} 张图片，开始分类...`, 'text-gray-500');
+      setClProgress(0, msg.total);
+    }
+    if (msg.type === 'log') clLog(msg.message, 'text-gray-500');
+    if (msg.type === 'progress') {
+      setClProgress(msg.current, msg.total);
+      updateCatStats(msg.category, msg.stats);
+      const conf = (msg.confidence * 100).toFixed(0);
+      const color = msg.category === 'uncertain' ? 'text-yellow-500' : 'text-violet-400';
+      clLog(`→  ${msg.file}  →  ${msg.category}  (${conf}%)`, color);
+    }
+    if (msg.type === 'error_item') clLog(`✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+    if (msg.type === 'done') {
+      clLog('────────────────────────────────────────', 'text-gray-700');
+      const entries = Object.entries(msg.stats).map(([k, v]) => `${k}: ${v}`).join('  ');
+      clLog(`完成 · ${entries}`, 'text-white');
+      setStatus('完成', 'bg-green-900 text-green-400');
+      setClProcessing(false);
+      clEventSource.close();
+    }
+    if (msg.type === 'error') {
+      clLog(`错误：${msg.message}`, 'text-red-400');
+      setStatus('出错', 'bg-red-900 text-red-400');
+      setClProcessing(false);
+      clEventSource.close();
+    }
+  };
+}
+
+function updateCatStats(category, stats) {
+  const container = document.getElementById('cl-cat-stats');
+  let badge = document.getElementById(`cat-badge-${category}`);
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = `cat-badge-${category}`;
+    const color = category === 'uncertain' ? 'bg-yellow-900 text-yellow-300' : 'bg-violet-900 text-violet-300';
+    badge.className = `log-item ${color} text-xs px-2.5 py-1 rounded-full font-mono`;
+    container.appendChild(badge);
+  }
+  badge.textContent = `${category}: ${stats[category] || 0}`;
+}
+
+function setClProgress(current, total) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  document.getElementById('cl-progress-bar').style.width = `${pct}%`;
+  document.getElementById('cl-progress-text').textContent = `${current} / ${total}`;
+}
+
+function setClProcessing(active) {
+  const btn = document.getElementById('cl-start-btn');
+  btn.disabled = active;
+  btn.querySelector('span').textContent = active ? '分类中...' : '开始分类';
+  if (active) setStatus('分类中', 'bg-violet-900 text-violet-300');
+  else if (document.getElementById('status-badge').textContent === '分类中') setStatus('空闲', 'bg-gray-800 text-gray-400');
+}
+
+function clLog(text, cls) { addLog('cl-log', text, cls); }
+
+let cgEventSource = null;
+let cgDefaultCount = 0;
+function startCatalog() {
+  const inputDir = document.getElementById('cg-input-dir').value.trim();
+  const outputDir = document.getElementById('cg-output-dir').value.trim();
+  const canvasWidth = parseInt(document.getElementById('cg-canvas-width').value, 10);
+  const padding = parseInt(document.getElementById('cg-padding').value, 10);
+  const globalScale = parseFloat(document.getElementById('cg-global-scale').value);
+  let categoryScales = [];
+  try {
+    categoryScales = getCatalogScalesFromUI();
+  } catch (err) {
+    alert(err.message || '缩放配置有误');
+    return;
+  }
+  if (!inputDir || !outputDir) {
+    alert('请填写输入目录和输出文件夹');
+    return;
+  }
+  if (!Number.isFinite(canvasWidth) || canvasWidth <= 0) {
+    alert('画布宽度必须大于 0');
+    return;
+  }
+  if (!Number.isFinite(padding) || padding < 0) {
+    alert('Padding 不能小于 0');
+    return;
+  }
+  if (!Number.isFinite(globalScale) || globalScale <= 0) {
+    alert('全局倍率必须大于 0');
+    return;
+  }
+  setCgProcessing(true);
+  cgDefaultCount = 0;
+  document.getElementById('cg-progress-card').classList.remove('hidden');
+  document.getElementById('cg-log').innerHTML = '';
+  document.getElementById('cg-result-path').textContent = '';
+  document.getElementById('cg-stat-rendered').textContent = '0';
+  document.getElementById('cg-stat-packages').textContent = '0';
+  document.getElementById('cg-stat-default').textContent = '0';
+  setCgProgress(0, 0);
+  fetch('/catalog/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: inputDir,
+      output_dir: outputDir,
+      canvas_width: canvasWidth,
+      padding,
+      global_scale: globalScale,
+      category_scales: categoryScales,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      listenCatalog();
+    })
+    .catch(err => {
+      alert(err.message || '启动失败');
+      setCgProcessing(false);
+    });
+}
+
+function listenCatalog() {
+  if (cgEventSource) cgEventSource.close();
+  cgEventSource = new EventSource('/catalog/stream');
+  cgEventSource.onmessage = function (e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+    if (msg.type === 'start') {
+      document.getElementById('cg-stat-packages').textContent = msg.packages;
+      document.getElementById('cg-result-path').textContent = `输出目录：${msg.output_dir}`;
+      cgLog(`发现 ${msg.packages} 个套餐，共 ${msg.total} 张 PNG，开始逐个生成网格图...`, 'text-gray-400');
+      setCgProgress(0, msg.total);
+    }
+    if (msg.type === 'package') cgLog(`=== ${msg.package} === (${msg.count} 张)`, 'text-sky-400');
+    if (msg.type === 'log') cgLog(msg.message, 'text-gray-500');
+    if (msg.type === 'progress') {
+      setCgProgress(msg.current, msg.total);
+      document.getElementById('cg-stat-rendered').textContent = msg.current;
+      if (msg.used_default_config) {
+        cgDefaultCount += 1;
+        document.getElementById('cg-stat-default').textContent = cgDefaultCount;
+        cgLog(`默认配置  ${msg.file}  ->  ${msg.category}  (${msg.target_width_px}x${msg.target_height_px})`, 'text-yellow-400');
+      } else {
+        cgLog(`已布局  ${msg.file}  ->  ${msg.category}  (${msg.target_width_px}x${msg.target_height_px})`, 'text-emerald-400');
+      }
+    }
+    if (msg.type === 'package_done') cgLog(`已输出  ${msg.package}_grid.png  (${msg.items} 张, ${msg.canvas_width}x${msg.canvas_height})`, 'text-sky-300');
+    if (msg.type === 'done') {
+      document.getElementById('cg-stat-rendered').textContent = msg.items;
+      document.getElementById('cg-stat-packages').textContent = msg.packages;
+      document.getElementById('cg-stat-default').textContent = msg.default_config_count;
+      document.getElementById('cg-result-path').textContent = `输出目录：${msg.output_dir}`;
+      cgLog('────────────────────────────────────────', 'text-gray-700');
+      cgLog(`完成 · 生成 ${msg.packages} 张拼图 · 物品 ${msg.items}`, 'text-white');
+      if (msg.default_config_count > 0) {
+        const detail = Object.entries(msg.default_categories || {}).map(([k, v]) => `${k}: ${v}`).join('  ');
+        if (detail) cgLog(`默认配置类别：${detail}`, 'text-yellow-400');
+      }
+      cgLog(`输出目录：${msg.output_dir}`, 'text-gray-300');
+      setStatus('完成', 'bg-green-900 text-green-400');
+      setCgProcessing(false);
+      cgEventSource.close();
+    }
+    if (msg.type === 'error') {
+      cgLog(`错误：${msg.message}`, 'text-red-400');
+      setStatus('出错', 'bg-red-900 text-red-400');
+      setCgProcessing(false);
+      cgEventSource.close();
+    }
+  };
+}
+
+function setCgProgress(current, total) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  document.getElementById('cg-progress-bar').style.width = `${pct}%`;
+  document.getElementById('cg-progress-text').textContent = `${current} / ${total}`;
+}
+
+function setCgProcessing(active) {
+  const btn = document.getElementById('cg-start-btn');
+  btn.disabled = active;
+  btn.querySelector('span').textContent = active ? '正在生成资产网格图...' : '开始生成资产网格图';
+  if (active) setStatus('拼图中', 'bg-emerald-900 text-emerald-300');
+  else if (document.getElementById('status-badge').textContent === '拼图中') setStatus('空闲', 'bg-gray-800 text-gray-400');
+}
+
+function cgLog(text, cls) { addLog('cg-log', text, cls); }
+</script>
+</body>
+</html>
