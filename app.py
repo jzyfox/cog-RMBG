@@ -9,9 +9,10 @@ import queue
 import shutil
 import threading
 import webbrowser
+from copy import deepcopy
 from pathlib import Path
 
-from asset_catalog_grid import BASE_WIDTHS_CM as DEFAULT_BASE_WIDTHS_CM
+from asset_catalog_grid import DEFAULT_CATALOG_LAYOUT, normalize_layout_config
 from flask import Flask, Response, render_template_string, request
 from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_WIDTH
 from PIL import Image
@@ -19,7 +20,7 @@ from PIL import Image
 app = Flask(__name__)
 
 CATEGORIES_FILE = Path(__file__).parent / "categories.json"
-CATALOG_SCALES_FILE = Path(__file__).parent / "catalog_scales.json"
+CATALOG_LAYOUT_FILE = Path(__file__).parent / "catalog_layout.json"
 
 
 def _load_categories() -> list[dict]:
@@ -36,70 +37,19 @@ def _format_number(value: float) -> int | float:
     return int(value) if float(value).is_integer() else float(value)
 
 
-def _default_catalog_scale_rows() -> list[dict]:
-    return [
-        {"name": name, "scale": 1.0}
-        for name in sorted(DEFAULT_BASE_WIDTHS_CM)
-    ]
+def _default_catalog_layout() -> dict:
+    return deepcopy(DEFAULT_CATALOG_LAYOUT)
 
 
-def _normalize_catalog_scale_rows(payload) -> list[dict]:
-    if payload is None:
-        return _default_catalog_scale_rows()
-
-    if isinstance(payload, dict):
-        rows = [{"name": name, "scale": scale} for name, scale in payload.items()]
-    elif isinstance(payload, list):
-        rows = payload
-    else:
-        raise ValueError("缩放配置格式不正确")
-
-    normalized: list[dict] = []
-    seen_names: set[str] = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            raise ValueError("缩放配置项必须是对象")
-
-        name = str(row.get("name", "")).strip().lower()
-        if not name:
-            continue
-
+def _load_catalog_layout() -> dict:
+    if CATALOG_LAYOUT_FILE.exists():
         try:
-            scale = float(row.get("scale"))
-        except (TypeError, ValueError):
-            raise ValueError(f"类别 {name} 的 scale 必须是数字") from None
-
-        if scale <= 0:
-            raise ValueError(f"类别 {name} 的 scale 必须大于 0")
-        if name in seen_names:
-            raise ValueError(f"类别 {name} 重复，请保留一条")
-        seen_names.add(name)
-
-        normalized.append({
-            "name": name,
-            "scale": _format_number(scale),
-        })
-
-    normalized.sort(key=lambda item: item["name"])
-    return normalized
-
-
-def _load_catalog_scales() -> list[dict]:
-    if CATALOG_SCALES_FILE.exists():
-        try:
-            return _normalize_catalog_scale_rows(
-                json.loads(CATALOG_SCALES_FILE.read_text(encoding="utf-8"))
+            return normalize_layout_config(
+                json.loads(CATALOG_LAYOUT_FILE.read_text(encoding="utf-8"))
             )
         except Exception:
             pass
-    return _default_catalog_scale_rows()
-
-
-def _catalog_scale_rows_to_map(rows: list[dict]) -> dict[str, float]:
-    return {
-        item["name"]: float(item["scale"])
-        for item in _normalize_catalog_scale_rows(rows)
-    }
+    return _default_catalog_layout()
 
 
 # ── Hero 清洗任务状态 ────────────────────────────────────────────────────────────
@@ -925,7 +875,7 @@ def index():
     return render_template_string(
         HTML,
         default_categories=_load_categories(),
-        default_catalog_scales=_load_catalog_scales(),
+        default_catalog_layout=_load_catalog_layout(),
         default_clean_edge_width=DEFAULT_EDGE_WIDTH,
         default_clean_edge_threshold=int(DEFAULT_EDGE_BRIGHTNESS_THRESHOLD),
     )
@@ -941,18 +891,18 @@ def save_categories():
 
 
 # ── Hero 清洗 / 拼图 / 抠图路由 ────────────────────────────────────────────────
-@app.route("/catalog/scales", methods=["POST"])
-def save_catalog_scales():
+@app.route("/catalog/layout", methods=["POST"])
+def save_catalog_layout():
     try:
-        rows = _normalize_catalog_scale_rows(request.json or [])
+        layout = normalize_layout_config(request.json or {})
     except ValueError as exc:
         return {"error": str(exc)}, 400
 
-    CATALOG_SCALES_FILE.write_text(
-        json.dumps(rows, ensure_ascii=False, indent=2),
+    CATALOG_LAYOUT_FILE.write_text(
+        json.dumps(layout, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return {"status": "saved", "count": len(rows)}
+    return {"status": "saved", "count": len(layout["boxes"])}
 
 
 @app.route("/clean/start", methods=["POST"])
@@ -1068,26 +1018,17 @@ def start_catalog():
     output_dir = data.get("output_dir", "").strip() or data.get("output_path", "").strip()
 
     try:
-        canvas_width = int(data.get("canvas_width", 4096))
-        padding = int(data.get("padding", 100))
-        global_scale = float(data.get("global_scale", 1.0))
-        category_scales = _normalize_catalog_scale_rows(data.get("category_scales"))
-    except (TypeError, ValueError) as exc:
+        layout = normalize_layout_config(data.get("layout"))
+    except ValueError as exc:
         return {"error": str(exc) or "参数格式不正确"}, 400
 
     if not input_dir or not output_dir:
         return {"error": "请填写输入目录和输出文件夹"}, 400
-    if canvas_width <= 0:
-        return {"error": "画布宽度必须大于 0"}, 400
-    if padding < 0:
-        return {"error": "Padding 不能小于 0"}, 400
-    if global_scale <= 0:
-        return {"error": "全局倍率必须大于 0"}, 400
 
     _drain(_catalog_queue)
     threading.Thread(
         target=_run_catalog,
-        args=(input_dir, output_dir, canvas_width, padding, global_scale, category_scales),
+        args=(input_dir, output_dir, layout),
         daemon=True,
     ).start()
     return {"status": "started"}
@@ -1301,10 +1242,7 @@ def _run_classify(
 def _run_catalog(
     input_dir: str,
     output_dir: str,
-    canvas_width: int,
-    padding: int,
-    global_scale: float,
-    category_scales: list[dict],
+    layout: dict,
 ) -> None:
     global _catalog_processing
 
@@ -1318,10 +1256,7 @@ def _run_catalog(
         summary = build_catalog_grids(
             input_dir=input_dir,
             output_dir=output_dir,
-            canvas_width=canvas_width,
-            padding=padding,
-            global_scale=global_scale,
-            category_scales=_catalog_scale_rows_to_map(category_scales),
+            layout=layout,
             progress_callback=_emit,
         )
         _catalog_queue.put({"type": "done", **summary})

@@ -1,0 +1,71 @@
+{
+  "canvas_width": 1024,
+  "canvas_height": 1024,
+  "boxes": [
+    {
+      "type": "sofa",
+      "x": 0,
+      "y": 0,
+      "width": 769,
+      "height": 263,
+      "allowed_types": []
+    },
+    {
+      "type": "coffee_table",
+      "x": 42,
+      "y": 277,
+      "width": 498,
+      "height": 231,
+      "allowed_types": [
+        "dining_table",
+        "bedside_table"
+      ]
+    },
+    {
+      "type": "lounge_chair",
+      "x": 610,
+      "y": 281,
+      "width": 281,
+      "height": 227,
+      "allowed_types": []
+    },
+    {
+      "type": "dining_table",
+      "x": 68,
+      "y": 525,
+      "width": 480,
+      "height": 223,
+      "allowed_types": [
+        "coffee_table",
+        "bedside_table"
+      ]
+    },
+    {
+      "type": "dining_chair",
+      "x": 650,
+      "y": 519,
+      "width": 272,
+      "height": 225,
+      "allowed_types": []
+    },
+    {
+      "type": "bed",
+      "x": 0,
+      "y": 759,
+      "width": 632,
+      "height": 265,
+      "allowed_types": []
+    },
+    {
+      "type": "bedside_table",
+      "x": 657,
+      "y": 762,
+      "width": 280,
+      "height": 257,
+      "allowed_types": [
+        "coffee_table",
+        "dining_table"
+      ]
+    }
+  ]
+}

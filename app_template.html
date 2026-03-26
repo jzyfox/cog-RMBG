@@ -27,7 +27,44 @@
     input[type=range] { accent-color:#6366f1; cursor:pointer; }
     .tab-btn { transition: all .15s; }
     .tab-btn.active { background:#312e81; color:#c7d2fe; border-color:#4338ca; }
-    .cat-row input, .scale-row input { padding:.45rem .75rem; font-size:.8rem; }
+    .cat-row input, .box-prop-input { padding:.45rem .75rem; font-size:.8rem; }
+    .layout-box {
+      position:absolute;
+      border:2px solid rgba(34,197,94,.85);
+      background:rgba(34,197,94,.12);
+      color:#dcfce7;
+      overflow:hidden;
+      user-select:none;
+    }
+    .layout-box.selected {
+      border-color:rgba(96,165,250,.95);
+      background:rgba(59,130,246,.16);
+      color:#dbeafe;
+      box-shadow:0 0 0 2px rgba(59,130,246,.25);
+    }
+    .layout-box-label {
+      position:absolute;
+      left:6px;
+      top:4px;
+      font-size:11px;
+      line-height:1;
+      padding:3px 6px;
+      border-radius:999px;
+      background:rgba(2,6,23,.68);
+      pointer-events:none;
+      white-space:nowrap;
+    }
+    .layout-box-handle {
+      position:absolute;
+      right:-1px;
+      bottom:-1px;
+      width:14px;
+      height:14px;
+      border-top:2px solid rgba(255,255,255,.95);
+      border-left:2px solid rgba(255,255,255,.95);
+      background:rgba(15,23,42,.8);
+      cursor:nwse-resize;
+    }
   </style>
 </head>
 <body class="bg-gray-950 min-h-screen text-gray-100 flex flex-col">
@@ -177,34 +214,86 @@
         <label class="text-sm text-gray-300">输出文件夹 <span class="text-gray-600">（每个子文件夹会生成一张图）</span></label>
         <input id="cg-output-dir" type="text" placeholder="例如：J:/catalog_grids" />
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div class="flex flex-col gap-1.5"><label class="text-sm text-gray-300">画布宽度</label><input id="cg-canvas-width" type="number" value="4096" min="512" step="256" /></div>
-        <div class="flex flex-col gap-1.5"><label class="text-sm text-gray-300">间距 Padding</label><input id="cg-padding" type="number" value="100" min="0" step="10" /></div>
-        <div class="flex flex-col gap-1.5"><label class="text-sm text-gray-300">全局倍率</label><input id="cg-global-scale" type="number" value="1.0" min="0.01" step="0.1" /></div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">画布宽度</label>
+          <input id="cg-canvas-width" type="number" value="1024" min="128" step="32" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">画布高度</label>
+          <input id="cg-canvas-height" type="number" value="1024" min="128" step="32" />
+        </div>
       </div>
       <div class="text-xs text-gray-500 leading-6 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
         每个子文件夹会单独生成一张 <span class="font-mono text-gray-300">子文件夹名_grid.png</span>。
-        文件名最后一个下划线后的后缀会被当作类别；内部基准宽度保留在
-        <span class="font-mono text-gray-300">asset_catalog_grid.py</span> 的
-        <span class="font-mono text-gray-300">BASE_WIDTHS_CM</span> 中。
-        前端只暴露更直观的 <span class="font-mono text-gray-300">全局倍率 + 类别 scale</span>。
+        当前拼图完全由下方的占位框布局驱动：图片会先裁切透明边，再按等比缩放填入对应类型的占位框，并在框内水平居中、底部对齐。
       </div>
     </div>
-    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-3">
-      <div class="flex items-center justify-between">
-        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">类别缩放表</h2>
-        <div class="flex gap-2">
-          <button id="save-scale-btn" onclick="saveCatalogScales()" class="text-xs text-emerald-400 hover:text-emerald-300 px-3 py-1 rounded-lg border border-emerald-900 hover:border-emerald-700 transition">保存配置</button>
-          <button onclick="addCatalogScaleRow()" class="text-xs text-indigo-400 hover:text-indigo-300 px-3 py-1 rounded-lg border border-indigo-800 hover:border-indigo-600 transition">+ 添加类别</button>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">可视化排版</h2>
+        <div class="flex gap-2 flex-wrap">
+          <button id="cg-add-box-btn" onclick="addCatalogLayoutBox()" class="text-xs text-indigo-400 hover:text-indigo-300 px-3 py-1 rounded-lg border border-indigo-800 hover:border-indigo-600 transition">+ 新增占位框</button>
+          <button id="cg-save-layout-btn" onclick="saveCatalogLayout()" class="text-xs text-emerald-400 hover:text-emerald-300 px-3 py-1 rounded-lg border border-emerald-900 hover:border-emerald-700 transition">保存布局</button>
         </div>
       </div>
-      <div class="grid grid-cols-[180px_120px_32px] gap-2 px-1">
-        <span class="text-xs text-gray-600">类别后缀</span>
-        <span class="text-xs text-gray-600">scale</span>
-        <span></span>
+
+      <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4">
+        <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
+          <div class="flex items-center justify-between text-xs text-gray-500">
+            <span>编辑画布</span>
+            <span id="cg-layout-meta" class="font-mono text-gray-400">1024 × 1024</span>
+          </div>
+          <div id="cg-layout-preview-shell" class="rounded-xl border border-gray-800 bg-slate-950/80 overflow-auto p-3">
+            <div id="cg-layout-stage" class="relative rounded-xl bg-[linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px)] bg-[size:32px_32px] mx-auto"></div>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-4">
+          <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
+            <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">占位框列表</div>
+            <div id="cg-box-list" class="flex flex-col gap-2 max-h-[260px] overflow-y-auto"></div>
+          </div>
+
+          <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
+            <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">选中占位框</div>
+            <div id="cg-empty-selection" class="text-sm text-gray-500">请选择一个占位框，或新增一个类型。</div>
+            <div id="cg-box-editor" class="hidden flex flex-col gap-3">
+              <div class="flex flex-col gap-1.5">
+                <label class="text-sm text-gray-300">类型</label>
+                <input id="cg-box-type" class="box-prop-input" type="text" placeholder="例如：sofa / bedside_table" />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label class="text-sm text-gray-300">候选类别</label>
+                <input id="cg-box-allowed-types" class="box-prop-input" type="text" placeholder="例如：dining_table, bedside_table" />
+                <div class="text-xs text-gray-500">逗号分隔。系统会先匹配当前类型，再按这里的顺序兜底补位。</div>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div class="flex flex-col gap-1.5">
+                  <label class="text-sm text-gray-300">X</label>
+                  <input id="cg-box-x" class="box-prop-input" type="number" min="0" step="1" />
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label class="text-sm text-gray-300">Y</label>
+                  <input id="cg-box-y" class="box-prop-input" type="number" min="0" step="1" />
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label class="text-sm text-gray-300">宽度</label>
+                  <input id="cg-box-width" class="box-prop-input" type="number" min="1" step="1" />
+                </div>
+                <div class="flex flex-col gap-1.5">
+                  <label class="text-sm text-gray-300">高度</label>
+                  <input id="cg-box-height" class="box-prop-input" type="number" min="1" step="1" />
+                </div>
+              </div>
+              <button id="cg-delete-box-btn" onclick="deleteSelectedCatalogBox()" class="text-xs text-red-300 hover:text-red-200 px-3 py-2 rounded-lg border border-red-900 hover:border-red-700 transition">删除当前占位框</button>
+            </div>
+          </div>
+        </div>
       </div>
-      <div id="catalog-scale-rows" class="flex flex-col gap-2"></div>
     </div>
+
     <button id="cg-start-btn" onclick="startCatalog()" class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
       <span>开始生成资产网格图</span>
@@ -213,9 +302,9 @@
       <div class="flex justify-between items-center"><h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">拼图进度</h2><span id="cg-progress-text" class="text-sm text-gray-400">0 / 0</span></div>
       <div class="bg-gray-800 rounded-full h-2 overflow-hidden"><div id="cg-progress-bar" class="progress-bar h-full bg-emerald-500 rounded-full" style="width:0%"></div></div>
       <div class="grid grid-cols-3 gap-3">
-        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-rendered" class="text-2xl font-bold text-emerald-400">0</div><div class="text-xs text-gray-500 mt-1">已处理</div></div>
-        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-packages" class="text-2xl font-bold text-sky-400">0</div><div class="text-xs text-gray-500 mt-1">套餐数</div></div>
-        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-default" class="text-2xl font-bold text-yellow-400">0</div><div class="text-xs text-gray-500 mt-1">默认配置</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-scanned" class="text-2xl font-bold text-emerald-400">0</div><div class="text-xs text-gray-500 mt-1">已扫描</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-selected" class="text-2xl font-bold text-sky-400">0</div><div class="text-xs text-gray-500 mt-1">已入框</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cg-stat-packages" class="text-2xl font-bold text-yellow-400">0</div><div class="text-xs text-gray-500 mt-1">已输出套餐</div></div>
       </div>
       <div id="cg-result-path" class="text-xs text-gray-500 break-all min-h-[1rem]"></div>
       <div id="cg-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
@@ -225,12 +314,31 @@
 
 <script>
 const DEFAULT_CATEGORIES = {{ default_categories | tojson }};
-const DEFAULT_CATALOG_SCALES = {{ default_catalog_scales | tojson }};
+const DEFAULT_CATALOG_LAYOUT = {{ default_catalog_layout | tojson }};
+const CATALOG_TYPE_ALIASES = {
+  sofa: ['sofa', 'couch'],
+  coffee_table: ['coffee_table', 'tea_table'],
+  lounge_chair: ['lounge_chair', 'armchair', 'accent_chair'],
+  dining_table: ['dining_table', 'table'],
+  dining_chair: ['dining_chair', 'chair'],
+  bed: ['bed', 'bedframe'],
+  bedside_table: ['bedside_table', 'side_table', 'nightstand', 'night_table'],
+};
+
+const catalogEditorState = {
+  layout: null,
+  selectedBoxId: null,
+  drag: null,
+  previewScale: 1,
+  nextBoxId: 1,
+};
+
 function switchTab(tab) {
   ['clean', 'rmbg', 'classify', 'catalog'].forEach(name => {
     document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== tab);
     document.getElementById(`tab-${name}-btn`).classList.toggle('active', name === tab);
   });
+  if (tab === 'catalog') requestAnimationFrame(renderCatalogEditor);
 }
 
 function setStatus(text, cls) {
@@ -287,43 +395,6 @@ function getCategoriesFromUI() {
   return items;
 }
 
-function buildCatalogScaleRow(name, scale) {
-  const row = document.createElement('div');
-  row.className = 'scale-row grid grid-cols-[180px_120px_32px] gap-2 items-center';
-  row.innerHTML = `
-    <input type="text" value="${escHtml(name)}" class="scale-name" placeholder="category" />
-    <input type="number" value="${scale ?? ''}" class="scale-value" min="0.01" step="0.1" placeholder="1.0" />
-    <button onclick="this.closest('.scale-row').remove()"
-      class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-600 hover:text-red-400 hover:bg-gray-800 transition text-lg leading-none">×</button>
-  `;
-  return row;
-}
-
-function addCatalogScaleRow(name = '', scale = '1.0') {
-  document.getElementById('catalog-scale-rows').appendChild(buildCatalogScaleRow(name, scale));
-}
-
-function getCatalogScalesFromUI() {
-  const items = [];
-  const seenNames = new Set();
-  document.querySelectorAll('.scale-row').forEach(row => {
-    const name = row.querySelector('.scale-name').value.trim().toLowerCase();
-    const scaleRaw = row.querySelector('.scale-value').value.trim();
-    if (!name && !scaleRaw) return;
-    if (!name) throw new Error('类别缩放表中存在未填写类别后缀的行');
-    const scale = parseFloat(scaleRaw);
-    if (!Number.isFinite(scale) || scale <= 0) {
-      throw new Error(`类别 ${name} 的 scale 必须是大于 0 的数字`);
-    }
-    if (seenNames.has(name)) {
-      throw new Error(`类别 ${name} 重复，请保留一条`);
-    }
-    seenNames.add(name);
-    items.push({ name, scale });
-  });
-  return items;
-}
-
 function saveCategories() {
   const cats = getCategoriesFromUI();
   if (cats.length === 0) {
@@ -356,30 +427,347 @@ function saveCategories() {
     });
 }
 
-function saveCatalogScales() {
-  let items = [];
-  try {
-    items = getCatalogScalesFromUI();
-  } catch (err) {
-    alert(err.message || '缩放配置有误');
+function normalizeCatalogBoxType(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  if (!normalized) return '';
+  for (const [canonical, aliases] of Object.entries(CATALOG_TYPE_ALIASES)) {
+    if (canonical === normalized || aliases.includes(normalized)) {
+      return canonical;
+    }
+  }
+  return normalized;
+}
+
+function normalizeCatalogAllowedTypes(values, boxType = '') {
+  const baseType = normalizeCatalogBoxType(boxType);
+  const rawValues = Array.isArray(values) ? values : String(values || '').split(',');
+  const normalizedValues = [];
+  const seenValues = new Set();
+
+  rawValues.forEach(value => {
+    const normalized = normalizeCatalogBoxType(value);
+    if (!normalized || normalized === baseType || seenValues.has(normalized)) {
+      return;
+    }
+    seenValues.add(normalized);
+    normalizedValues.push(normalized);
+  });
+
+  return normalizedValues;
+}
+
+function makeCatalogBoxId() {
+  const id = `box_${catalogEditorState.nextBoxId}`;
+  catalogEditorState.nextBoxId += 1;
+  return id;
+}
+
+function hydrateCatalogLayout(layout) {
+  const source = JSON.parse(JSON.stringify(layout || DEFAULT_CATALOG_LAYOUT));
+  const boxes = Array.isArray(source.boxes) ? source.boxes : [];
+  return {
+    canvas_width: Number.isFinite(Number(source.canvas_width)) && Number(source.canvas_width) > 0 ? Math.round(Number(source.canvas_width)) : DEFAULT_CATALOG_LAYOUT.canvas_width,
+    canvas_height: Number.isFinite(Number(source.canvas_height)) && Number(source.canvas_height) > 0 ? Math.round(Number(source.canvas_height)) : DEFAULT_CATALOG_LAYOUT.canvas_height,
+    boxes: boxes.map(box => {
+      const normalizedType = normalizeCatalogBoxType(String(box.type || '').trim().toLowerCase());
+      return {
+        id: makeCatalogBoxId(),
+        type: normalizedType,
+        x: Number.isFinite(Number(box.x)) ? Math.round(Number(box.x)) : 0,
+        y: Number.isFinite(Number(box.y)) ? Math.round(Number(box.y)) : 0,
+        width: Number.isFinite(Number(box.width)) ? Math.max(1, Math.round(Number(box.width))) : 1,
+        height: Number.isFinite(Number(box.height)) ? Math.max(1, Math.round(Number(box.height))) : 1,
+        allowed_types: normalizeCatalogAllowedTypes(box.allowed_types, normalizedType),
+      };
+    }),
+  };
+}
+
+function getSelectedCatalogBox() {
+  return catalogEditorState.layout.boxes.find(box => box.id === catalogEditorState.selectedBoxId) || null;
+}
+
+function getCatalogLayoutFromUI() {
+  const canvasWidth = parseInt(document.getElementById('cg-canvas-width').value, 10);
+  const canvasHeight = parseInt(document.getElementById('cg-canvas-height').value, 10);
+  if (!Number.isFinite(canvasWidth) || canvasWidth <= 0) {
+    throw new Error('画布宽度必须大于 0');
+  }
+  if (!Number.isFinite(canvasHeight) || canvasHeight <= 0) {
+    throw new Error('画布高度必须大于 0');
+  }
+
+  const boxes = [];
+  const seenTypes = new Set();
+  catalogEditorState.layout.boxes.forEach(box => {
+    const type = normalizeCatalogBoxType(box.type);
+    const x = Math.round(Number(box.x));
+    const y = Math.round(Number(box.y));
+    const width = Math.round(Number(box.width));
+    const height = Math.round(Number(box.height));
+    const allowedTypes = normalizeCatalogAllowedTypes(box.allowed_types, type);
+
+    if (!type) throw new Error('占位框类型不能为空');
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) {
+      throw new Error(`占位框 ${type} 的坐标和尺寸必须是数字`);
+    }
+    if (width <= 0 || height <= 0) {
+      throw new Error(`占位框 ${type} 的宽高必须大于 0`);
+    }
+    if (x < 0 || y < 0) {
+      throw new Error(`占位框 ${type} 不能超出画布左上边界`);
+    }
+    if (x + width > canvasWidth || y + height > canvasHeight) {
+      throw new Error(`占位框 ${type} 必须完全落在画布内`);
+    }
+    if (seenTypes.has(type)) {
+      throw new Error(`占位框类型 ${type} 重复`);
+    }
+
+    seenTypes.add(type);
+    boxes.push({ type, x, y, width, height, allowed_types: allowedTypes });
+  });
+
+  return { canvas_width: canvasWidth, canvas_height: canvasHeight, boxes };
+}
+
+function syncCatalogCanvasInputsFromState() {
+  document.getElementById('cg-canvas-width').value = catalogEditorState.layout.canvas_width;
+  document.getElementById('cg-canvas-height').value = catalogEditorState.layout.canvas_height;
+  document.getElementById('cg-layout-meta').textContent = `${catalogEditorState.layout.canvas_width} × ${catalogEditorState.layout.canvas_height}`;
+}
+
+function setCatalogLayout(layout) {
+  catalogEditorState.layout = hydrateCatalogLayout(layout);
+  if (!catalogEditorState.layout.boxes.some(box => box.id === catalogEditorState.selectedBoxId)) {
+    catalogEditorState.selectedBoxId = catalogEditorState.layout.boxes[0]?.id || null;
+  }
+  syncCatalogCanvasInputsFromState();
+  renderCatalogEditor();
+}
+
+function renderCatalogBoxList() {
+  const list = document.getElementById('cg-box-list');
+  list.innerHTML = '';
+  if (catalogEditorState.layout.boxes.length === 0) {
+    list.innerHTML = '<div class="text-sm text-gray-500">还没有占位框，先新增一个吧。</div>';
     return;
   }
-  const btn = document.getElementById('save-scale-btn');
+  catalogEditorState.layout.boxes.forEach(box => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `text-left rounded-xl border px-3 py-2 transition ${catalogEditorState.selectedBoxId === box.id ? 'border-sky-500 bg-sky-950/40 text-sky-200' : 'border-gray-800 bg-gray-900 text-gray-300 hover:border-gray-700'}`;
+    button.innerHTML = `<div class="font-mono text-sm">${escHtml(box.type || '(未命名)')}</div><div class="text-xs text-gray-500 mt-1">${box.x}, ${box.y} · ${box.width} × ${box.height}</div>`;
+    button.onclick = () => {
+      catalogEditorState.selectedBoxId = box.id;
+      renderCatalogEditor();
+    };
+    list.appendChild(button);
+  });
+}
+
+function renderCatalogBoxEditor() {
+  const editor = document.getElementById('cg-box-editor');
+  const empty = document.getElementById('cg-empty-selection');
+  const box = getSelectedCatalogBox();
+  if (!box) {
+    editor.classList.add('hidden');
+    empty.classList.remove('hidden');
+    return;
+  }
+
+  empty.classList.add('hidden');
+  editor.classList.remove('hidden');
+  document.getElementById('cg-box-type').value = box.type;
+  document.getElementById('cg-box-allowed-types').value = (box.allowed_types || []).join(', ');
+  document.getElementById('cg-box-x').value = box.x;
+  document.getElementById('cg-box-y').value = box.y;
+  document.getElementById('cg-box-width').value = box.width;
+  document.getElementById('cg-box-height').value = box.height;
+}
+
+function renderCatalogEditor() {
+  if (!catalogEditorState.layout) return;
+  syncCatalogCanvasInputsFromState();
+  renderCatalogBoxList();
+  renderCatalogBoxEditor();
+
+  const shell = document.getElementById('cg-layout-preview-shell');
+  const stage = document.getElementById('cg-layout-stage');
+  const shellWidth = Math.max(320, shell.clientWidth - 24);
+  const shellHeight = Math.max(320, window.innerHeight * 0.55);
+  const scale = Math.min(shellWidth / catalogEditorState.layout.canvas_width, shellHeight / catalogEditorState.layout.canvas_height, 1);
+  catalogEditorState.previewScale = scale;
+
+  stage.innerHTML = '';
+  stage.style.width = `${Math.round(catalogEditorState.layout.canvas_width * scale)}px`;
+  stage.style.height = `${Math.round(catalogEditorState.layout.canvas_height * scale)}px`;
+  stage.onpointerdown = event => {
+    if (event.target === stage) {
+      catalogEditorState.selectedBoxId = null;
+      renderCatalogEditor();
+    }
+  };
+
+  catalogEditorState.layout.boxes.forEach(box => {
+    const boxNode = document.createElement('div');
+    boxNode.className = `layout-box ${catalogEditorState.selectedBoxId === box.id ? 'selected' : ''}`;
+    boxNode.style.left = `${Math.round(box.x * scale)}px`;
+    boxNode.style.top = `${Math.round(box.y * scale)}px`;
+    boxNode.style.width = `${Math.max(1, Math.round(box.width * scale))}px`;
+    boxNode.style.height = `${Math.max(1, Math.round(box.height * scale))}px`;
+    boxNode.dataset.boxId = box.id;
+
+    const label = document.createElement('div');
+    label.className = 'layout-box-label';
+    label.textContent = box.type || '(未命名)';
+    boxNode.appendChild(label);
+
+    const handle = document.createElement('div');
+    handle.className = 'layout-box-handle';
+    handle.addEventListener('pointerdown', event => beginCatalogBoxDrag(event, box.id, 'resize'));
+    boxNode.appendChild(handle);
+
+    boxNode.addEventListener('pointerdown', event => {
+      if (event.target === handle) return;
+      beginCatalogBoxDrag(event, box.id, 'move');
+    });
+
+    stage.appendChild(boxNode);
+  });
+}
+
+function beginCatalogBoxDrag(event, boxId, mode) {
+  if (event.button !== undefined && event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const box = catalogEditorState.layout.boxes.find(item => item.id === boxId);
+  if (!box) return;
+  catalogEditorState.selectedBoxId = boxId;
+  catalogEditorState.drag = {
+    mode,
+    boxId,
+    startX: event.clientX,
+    startY: event.clientY,
+    box: { ...box },
+  };
+  renderCatalogEditor();
+}
+
+function handleCatalogPointerMove(event) {
+  if (!catalogEditorState.drag) return;
+  const { boxId, mode, startX, startY, box } = catalogEditorState.drag;
+  const target = catalogEditorState.layout.boxes.find(item => item.id === boxId);
+  if (!target) return;
+
+  const dx = Math.round((event.clientX - startX) / catalogEditorState.previewScale);
+  const dy = Math.round((event.clientY - startY) / catalogEditorState.previewScale);
+  const canvasWidth = catalogEditorState.layout.canvas_width;
+  const canvasHeight = catalogEditorState.layout.canvas_height;
+
+  if (mode === 'move') {
+    target.x = Math.min(Math.max(0, box.x + dx), canvasWidth - target.width);
+    target.y = Math.min(Math.max(0, box.y + dy), canvasHeight - target.height);
+  } else {
+    target.width = Math.max(1, Math.min(canvasWidth - target.x, box.width + dx));
+    target.height = Math.max(1, Math.min(canvasHeight - target.y, box.height + dy));
+  }
+  renderCatalogEditor();
+}
+
+function handleCatalogPointerUp() {
+  if (!catalogEditorState.drag) return;
+  catalogEditorState.drag = null;
+}
+
+function addCatalogLayoutBox() {
+  const existingTypes = new Set(catalogEditorState.layout.boxes.map(box => String(box.type || '').trim().toLowerCase()));
+  let index = 1;
+  let type = `new_type_${index}`;
+  while (existingTypes.has(type)) {
+    index += 1;
+    type = `new_type_${index}`;
+  }
+
+  const box = {
+    id: makeCatalogBoxId(),
+    type,
+    x: Math.max(0, 40 + catalogEditorState.layout.boxes.length * 12),
+    y: Math.max(0, 40 + catalogEditorState.layout.boxes.length * 12),
+    width: Math.min(180, catalogEditorState.layout.canvas_width),
+    height: Math.min(180, catalogEditorState.layout.canvas_height),
+    allowed_types: [],
+  };
+  box.x = Math.min(box.x, Math.max(0, catalogEditorState.layout.canvas_width - box.width));
+  box.y = Math.min(box.y, Math.max(0, catalogEditorState.layout.canvas_height - box.height));
+
+  catalogEditorState.layout.boxes.push(box);
+  catalogEditorState.selectedBoxId = box.id;
+  renderCatalogEditor();
+}
+
+function deleteSelectedCatalogBox() {
+  const boxId = catalogEditorState.selectedBoxId;
+  if (!boxId) return;
+  catalogEditorState.layout.boxes = catalogEditorState.layout.boxes.filter(box => box.id !== boxId);
+  catalogEditorState.selectedBoxId = catalogEditorState.layout.boxes[0]?.id || null;
+  renderCatalogEditor();
+}
+
+function updateSelectedCatalogBoxField(field, value) {
+  const box = getSelectedCatalogBox();
+  if (!box) return;
+
+  if (field === 'type') {
+    box.type = String(value || '').trim().toLowerCase();
+  } else if (field === 'allowed_types') {
+    box.allowed_types = normalizeCatalogAllowedTypes(value, box.type);
+  } else {
+    const numericValue = Math.round(Number(value));
+    if (Number.isFinite(numericValue)) {
+      box[field] = field === 'width' || field === 'height' ? Math.max(1, numericValue) : numericValue;
+    }
+  }
+  renderCatalogEditor();
+}
+
+function syncCatalogCanvasFromInputs() {
+  const width = parseInt(document.getElementById('cg-canvas-width').value, 10);
+  const height = parseInt(document.getElementById('cg-canvas-height').value, 10);
+  if (Number.isFinite(width) && width > 0) {
+    catalogEditorState.layout.canvas_width = width;
+  }
+  if (Number.isFinite(height) && height > 0) {
+    catalogEditorState.layout.canvas_height = height;
+  }
+  renderCatalogEditor();
+}
+
+function saveCatalogLayout() {
+  let layout = null;
+  try {
+    layout = getCatalogLayoutFromUI();
+  } catch (err) {
+    alert(err.message || '布局配置有误');
+    return;
+  }
+
+  setCatalogLayout(layout);
+  const btn = document.getElementById('cg-save-layout-btn');
   btn.textContent = '保存中...';
   btn.disabled = true;
-  fetch('/catalog/scales', {
+  fetch('/catalog/layout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(items),
+    body: JSON.stringify(layout),
   })
     .then(r => r.json())
     .then(d => {
       if (d.error) throw new Error(d.error);
-      btn.textContent = `已保存 (${d.count} 项)`;
-      btn.className = btn.className.replace('text-emerald-400', 'text-white').replace('border-emerald-900', 'border-emerald-600');
+      setCatalogLayout(layout);
+      btn.textContent = `已保存 (${d.count} 个框)`;
       setTimeout(() => {
-        btn.textContent = '保存配置';
-        btn.className = btn.className.replace('text-white', 'text-emerald-400').replace('border-emerald-600', 'border-emerald-900');
+        btn.textContent = '保存布局';
         btn.disabled = false;
       }, 2000);
     })
@@ -391,8 +779,21 @@ function saveCatalogScales() {
 }
 
 DEFAULT_CATEGORIES.forEach(item => addCategoryRow(item.name, item.prompt));
-DEFAULT_CATALOG_SCALES.forEach(item => addCatalogScaleRow(item.name, item.scale));
 updateThresholdLabel(document.getElementById('cl-threshold').value);
+setCatalogLayout(DEFAULT_CATALOG_LAYOUT);
+document.getElementById('cg-canvas-width').addEventListener('input', syncCatalogCanvasFromInputs);
+document.getElementById('cg-canvas-height').addEventListener('input', syncCatalogCanvasFromInputs);
+document.getElementById('cg-box-type').addEventListener('input', event => updateSelectedCatalogBoxField('type', event.target.value));
+document.getElementById('cg-box-allowed-types').addEventListener('input', event => updateSelectedCatalogBoxField('allowed_types', event.target.value));
+document.getElementById('cg-box-x').addEventListener('input', event => updateSelectedCatalogBoxField('x', event.target.value));
+document.getElementById('cg-box-y').addEventListener('input', event => updateSelectedCatalogBoxField('y', event.target.value));
+document.getElementById('cg-box-width').addEventListener('input', event => updateSelectedCatalogBoxField('width', event.target.value));
+document.getElementById('cg-box-height').addEventListener('input', event => updateSelectedCatalogBoxField('height', event.target.value));
+window.addEventListener('resize', () => {
+  if (!document.getElementById('panel-catalog').classList.contains('hidden')) renderCatalogEditor();
+});
+window.addEventListener('pointermove', handleCatalogPointerMove);
+window.addEventListener('pointerup', handleCatalogPointerUp);
 
 let cleanEventSource = null;
 
@@ -699,44 +1100,28 @@ function setClProcessing(active) {
 function clLog(text, cls) { addLog('cl-log', text, cls); }
 
 let cgEventSource = null;
-let cgDefaultCount = 0;
 function startCatalog() {
   const inputDir = document.getElementById('cg-input-dir').value.trim();
   const outputDir = document.getElementById('cg-output-dir').value.trim();
-  const canvasWidth = parseInt(document.getElementById('cg-canvas-width').value, 10);
-  const padding = parseInt(document.getElementById('cg-padding').value, 10);
-  const globalScale = parseFloat(document.getElementById('cg-global-scale').value);
-  let categoryScales = [];
+  let layout = null;
   try {
-    categoryScales = getCatalogScalesFromUI();
+    layout = getCatalogLayoutFromUI();
   } catch (err) {
-    alert(err.message || '缩放配置有误');
+    alert(err.message || '布局配置有误');
     return;
   }
   if (!inputDir || !outputDir) {
     alert('请填写输入目录和输出文件夹');
     return;
   }
-  if (!Number.isFinite(canvasWidth) || canvasWidth <= 0) {
-    alert('画布宽度必须大于 0');
-    return;
-  }
-  if (!Number.isFinite(padding) || padding < 0) {
-    alert('Padding 不能小于 0');
-    return;
-  }
-  if (!Number.isFinite(globalScale) || globalScale <= 0) {
-    alert('全局倍率必须大于 0');
-    return;
-  }
+  setCatalogLayout(layout);
   setCgProcessing(true);
-  cgDefaultCount = 0;
   document.getElementById('cg-progress-card').classList.remove('hidden');
   document.getElementById('cg-log').innerHTML = '';
   document.getElementById('cg-result-path').textContent = '';
-  document.getElementById('cg-stat-rendered').textContent = '0';
+  document.getElementById('cg-stat-scanned').textContent = '0';
+  document.getElementById('cg-stat-selected').textContent = '0';
   document.getElementById('cg-stat-packages').textContent = '0';
-  document.getElementById('cg-stat-default').textContent = '0';
   setCgProgress(0, 0);
   fetch('/catalog/start', {
     method: 'POST',
@@ -744,10 +1129,7 @@ function startCatalog() {
     body: JSON.stringify({
       input_dir: inputDir,
       output_dir: outputDir,
-      canvas_width: canvasWidth,
-      padding,
-      global_scale: globalScale,
-      category_scales: categoryScales,
+      layout,
     }),
   })
     .then(r => r.json())
@@ -768,36 +1150,61 @@ function listenCatalog() {
     const msg = JSON.parse(e.data);
     if (msg.type === 'ping') return;
     if (msg.type === 'start') {
-      document.getElementById('cg-stat-packages').textContent = msg.packages;
       document.getElementById('cg-result-path').textContent = `输出目录：${msg.output_dir}`;
-      cgLog(`发现 ${msg.packages} 个套餐，共 ${msg.total} 张 PNG，开始逐个生成网格图...`, 'text-gray-400');
+      cgLog(`发现 ${msg.packages} 个套餐，共 ${msg.total} 张 PNG，开始按占位框生成网格图...`, 'text-gray-400');
+      cgLog(`画布：${msg.canvas_width} × ${msg.canvas_height} · 占位框 ${msg.box_count} 个`, 'text-gray-500');
       setCgProgress(0, msg.total);
     }
     if (msg.type === 'package') cgLog(`=== ${msg.package} === (${msg.count} 张)`, 'text-sky-400');
     if (msg.type === 'log') cgLog(msg.message, 'text-gray-500');
     if (msg.type === 'progress') {
       setCgProgress(msg.current, msg.total);
-      document.getElementById('cg-stat-rendered').textContent = msg.current;
-      if (msg.used_default_config) {
-        cgDefaultCount += 1;
-        document.getElementById('cg-stat-default').textContent = cgDefaultCount;
-        cgLog(`默认配置  ${msg.file}  ->  ${msg.category}  (${msg.target_width_px}x${msg.target_height_px})`, 'text-yellow-400');
+      document.getElementById('cg-stat-scanned').textContent = msg.stats.scanned;
+      document.getElementById('cg-stat-selected').textContent = msg.stats.selected;
+      if (msg.status === 'candidate') {
+        cgLog(`候选  ${msg.file}  ->  ${msg.category}`, 'text-slate-400');
+      } else if (msg.status === 'selected') {
+        cgLog(`入框  ${msg.file}  ->  ${msg.category}  (${msg.target_width_px}x${msg.target_height_px})`, 'text-emerald-400');
+      } else if (msg.status === 'duplicate_category') {
+        cgLog(`跳过重复  ${msg.file}  ->  ${msg.category}`, 'text-yellow-400');
+      } else if (msg.status === 'ignored_type') {
+        cgLog(`忽略未配置  ${msg.file}  ->  ${msg.category}`, 'text-gray-500');
       } else {
-        cgLog(`已布局  ${msg.file}  ->  ${msg.category}  (${msg.target_width_px}x${msg.target_height_px})`, 'text-emerald-400');
+        cgLog(`处理失败  ${msg.file}  ->  ${msg.category}`, 'text-red-400');
       }
     }
-    if (msg.type === 'package_done') cgLog(`已输出  ${msg.package}_grid.png  (${msg.items} 张, ${msg.canvas_width}x${msg.canvas_height})`, 'text-sky-300');
+    if (msg.type === 'error_item') {
+      cgLog(`✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+    }
+    if (msg.type === 'package_done') {
+      document.getElementById('cg-stat-scanned').textContent = msg.stats.scanned;
+      document.getElementById('cg-stat-selected').textContent = msg.stats.selected;
+      document.getElementById('cg-stat-packages').textContent = msg.stats.packages_rendered;
+      cgLog(`已输出  ${msg.package}_grid.png  (精确 ${msg.exact_filled} / 兜底 ${msg.fallback_filled} / 总入框 ${msg.items_placed})`, 'text-sky-300');
+      (msg.placement_details || []).forEach(detail => {
+        if (detail.match_mode === 'fallback') {
+          cgLog(`兜底入框  ${detail.file}  ->  ${detail.box_type}  (来自 ${detail.source_category})`, 'text-yellow-400');
+        } else {
+          cgLog(`精确入框  ${detail.file}  ->  ${detail.box_type}`, 'text-emerald-400');
+        }
+      });
+      if ((msg.fallback_usage || []).length > 0) {
+        cgLog(`兜底关系：${msg.fallback_usage.join(', ')}`, 'text-yellow-500');
+      }
+      if ((msg.missing_types || []).length > 0) {
+        cgLog(`缺失占位框：${msg.missing_types.join(', ')}`, 'text-gray-500');
+      }
+    }
     if (msg.type === 'done') {
-      document.getElementById('cg-stat-rendered').textContent = msg.items;
-      document.getElementById('cg-stat-packages').textContent = msg.packages;
-      document.getElementById('cg-stat-default').textContent = msg.default_config_count;
+      document.getElementById('cg-stat-scanned').textContent = msg.stats.scanned;
+      document.getElementById('cg-stat-selected').textContent = msg.stats.selected;
+      document.getElementById('cg-stat-packages').textContent = msg.stats.packages_rendered;
       document.getElementById('cg-result-path').textContent = `输出目录：${msg.output_dir}`;
       cgLog('────────────────────────────────────────', 'text-gray-700');
-      cgLog(`完成 · 生成 ${msg.packages} 张拼图 · 物品 ${msg.items}`, 'text-white');
-      if (msg.default_config_count > 0) {
-        const detail = Object.entries(msg.default_categories || {}).map(([k, v]) => `${k}: ${v}`).join('  ');
-        if (detail) cgLog(`默认配置类别：${detail}`, 'text-yellow-400');
-      }
+      cgLog(`完成 · 生成 ${msg.packages} 张拼图 · 扫描 ${msg.stats.scanned} · 入框 ${msg.stats.selected}`, 'text-white');
+      if (msg.stats.duplicate > 0) cgLog(`重复类别跳过：${msg.stats.duplicate}`, 'text-yellow-400');
+      if (msg.stats.ignored > 0) cgLog(`未配置类别忽略：${msg.stats.ignored}`, 'text-gray-400');
+      if (msg.stats.error > 0) cgLog(`处理异常：${msg.stats.error}`, 'text-red-400');
       cgLog(`输出目录：${msg.output_dir}`, 'text-gray-300');
       setStatus('完成', 'bg-green-900 text-green-400');
       setCgProcessing(false);
@@ -822,6 +1229,8 @@ function setCgProcessing(active) {
   const btn = document.getElementById('cg-start-btn');
   btn.disabled = active;
   btn.querySelector('span').textContent = active ? '正在生成资产网格图...' : '开始生成资产网格图';
+  document.getElementById('cg-save-layout-btn').disabled = active;
+  document.getElementById('cg-add-box-btn').disabled = active;
   if (active) setStatus('拼图中', 'bg-emerald-900 text-emerald-300');
   else if (document.getElementById('status-badge').textContent === '拼图中') setStatus('空闲', 'bg-gray-800 text-gray-400');
 }
