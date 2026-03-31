@@ -10,7 +10,7 @@
     .log-item { animation: fadeIn .15s ease; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }
     .progress-bar { transition: width .35s ease; }
-    input[type=text], input[type=number] {
+    input[type=text], input[type=number], select {
       background:#1f2937;
       border:1px solid #374151;
       border-radius:.5rem;
@@ -20,7 +20,7 @@
       width:100%;
       transition:box-shadow .15s;
     }
-    input[type=text]:focus, input[type=number]:focus {
+    input[type=text]:focus, input[type=number]:focus, select:focus {
       outline:none;
       box-shadow:0 0 0 3px rgba(99,102,241,.3);
     }
@@ -75,12 +75,13 @@
     <button id="tab-clean-btn" onclick="switchTab('clean')" class="tab-btn active text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">Hero 清洗</button>
     <button id="tab-rmbg-btn" onclick="switchTab('rmbg')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">批量抠图</button>
     <button id="tab-classify-btn" onclick="switchTab('classify')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">图片分类</button>
+    <button id="tab-semantic-btn" onclick="switchTab('semantic')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">语义标签</button>
     <button id="tab-catalog-btn" onclick="switchTab('catalog')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">资产拼图</button>
   </nav>
   <span id="status-badge" class="ml-auto text-xs px-3 py-1 rounded-full bg-gray-800 text-gray-400">空闲</span>
 </header>
 
-<main class="flex-1 px-6 py-6 max-w-4xl mx-auto w-full">
+<main class="flex-1 px-6 py-6 max-w-7xl mx-auto w-full">
   <div id="panel-clean" class="flex flex-col gap-5">
     <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
       <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">Hero 图片清洗</h2>
@@ -203,6 +204,164 @@
     </div>
   </div>
 
+  <div id="panel-semantic" class="hidden flex flex-col gap-5">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">语义标签设置</h2>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">输入文件夹 <span class="text-gray-600">（递归扫描分类后的透明 PNG）</span></label>
+        <input id="sem-input-dir" type="text" placeholder="例如：J:/classified_assets" />
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">目标品类</label>
+          <select id="sem-category"></select>
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">重试次数</label>
+          <input id="sem-max-retries" type="number" min="0" step="1" value="{{ default_semantic_max_retries }}" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">请求间隔（秒）</label>
+          <input id="sem-sleep-seconds" type="number" min="0" step="0.1" value="{{ default_semantic_sleep_seconds }}" />
+        </div>
+        <div class="flex flex-col justify-end">
+          <label class="inline-flex items-center gap-2 text-sm text-gray-300 h-full">
+            <input id="sem-skip-existing" type="checkbox" class="w-4 h-4 rounded border-gray-700 bg-gray-950 text-indigo-500" checked />
+            <span>跳过已有合法结果</span>
+          </label>
+        </div>
+      </div>
+      <div class="text-xs text-gray-500 leading-6 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
+        当前语义标签工作台支持 7 个套餐相关品类，批量打标仍按“单次选择一个品类”运行。
+        程序会在每张图片同级写入同名 <span class="font-mono text-gray-300">.json</span>，
+        并在输入根目录聚合生成 <span class="font-mono text-gray-300">semantic_tags.jsonl</span> 与
+        <span class="font-mono text-gray-300">semantic_tag_errors.jsonl</span>。
+      </div>
+      <div class="flex gap-3 flex-wrap">
+        <button id="sem-start-btn" onclick="startSemanticTagging()" class="bg-fuchsia-600 hover:bg-fuchsia-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v12M6 12h12"/></svg>
+          <span>开始批量打标</span>
+        </button>
+        <button id="sem-load-btn" onclick="loadSemanticResults()" class="bg-gray-800 hover:bg-gray-700 disabled:bg-gray-900 disabled:text-gray-600 disabled:cursor-not-allowed text-gray-100 font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m14.256 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-14.357-2m14.357 2H15"/></svg>
+          <span>加载已有结果</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="sem-progress-card" class="hidden bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex justify-between items-center">
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">打标进度</h2>
+        <span id="sem-progress-text" class="text-sm text-gray-400">0 / 0</span>
+      </div>
+      <div class="bg-gray-800 rounded-full h-2 overflow-hidden"><div id="sem-progress-bar" class="progress-bar h-full bg-fuchsia-500 rounded-full" style="width:0%"></div></div>
+      <div class="grid grid-cols-3 gap-3">
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="sem-stat-tagged" class="text-2xl font-bold text-fuchsia-300">0</div><div class="text-xs text-gray-500 mt-1">已打标</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="sem-stat-skipped" class="text-2xl font-bold text-sky-300">0</div><div class="text-xs text-gray-500 mt-1">跳过已有</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="sem-stat-error" class="text-2xl font-bold text-red-400">0</div><div class="text-xs text-gray-500 mt-1">失败</div></div>
+      </div>
+      <div id="sem-result-path" class="text-xs text-gray-500 break-all min-h-[1rem]"></div>
+      <div id="sem-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
+    </div>
+
+    <div id="sem-review-card" class="hidden bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">结果复核</h2>
+          <div id="sem-review-summary" class="text-sm text-gray-400 mt-1">尚未加载任何结果</div>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <button id="sem-save-current-btn" onclick="saveCurrentSemanticItem()" class="text-xs text-emerald-300 hover:text-emerald-200 px-3 py-2 rounded-lg border border-emerald-900 hover:border-emerald-700 transition">保存当前</button>
+          <button id="sem-save-all-btn" onclick="saveAllSemanticItems()" class="text-xs text-emerald-300 hover:text-emerald-200 px-3 py-2 rounded-lg border border-emerald-900 hover:border-emerald-700 transition">保存全部修改</button>
+          <button id="sem-reload-btn" onclick="loadSemanticResults({ preserveSelection: true })" class="text-xs text-gray-300 hover:text-gray-100 px-3 py-2 rounded-lg border border-gray-800 hover:border-gray-600 transition">重新加载</button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="sem-review-valid" class="text-2xl font-bold text-emerald-400">0</div><div class="text-xs text-gray-500 mt-1">合法</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="sem-review-invalid" class="text-2xl font-bold text-amber-400">0</div><div class="text-xs text-gray-500 mt-1">非法</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="sem-review-missing" class="text-2xl font-bold text-slate-300">0</div><div class="text-xs text-gray-500 mt-1">缺失</div></div>
+        <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="sem-review-dirty" class="text-2xl font-bold text-fuchsia-300">0</div><div class="text-xs text-gray-500 mt-1">待保存</div></div>
+      </div>
+
+      <div class="grid grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)] gap-4">
+        <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
+          <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">结果列表</div>
+          <div id="sem-review-list" class="flex flex-col gap-2 max-h-[720px] overflow-y-auto"></div>
+        </div>
+
+        <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-4">
+          <div id="sem-empty-selection" class="text-sm text-gray-500">请先加载结果并选择一张图片。</div>
+          <div id="sem-review-editor" class="hidden flex flex-col gap-4">
+            <div class="grid grid-cols-1 2xl:grid-cols-[320px_minmax(0,1fr)] gap-4">
+              <div class="flex flex-col gap-3">
+                <div class="rounded-2xl overflow-hidden border border-gray-800 bg-white min-h-[240px] flex items-center justify-center">
+                  <img id="sem-preview-image" src="" alt="semantic preview" class="max-h-[320px] w-full object-contain" />
+                </div>
+                <div id="sem-selected-meta" class="text-xs text-gray-500 break-all"></div>
+                <div id="sem-selected-status" class="text-xs text-gray-500 break-all"></div>
+              </div>
+
+              <div class="flex flex-col gap-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">主风格</label>
+                    <select id="sem-primary-style"></select>
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">次风格</label>
+                    <select id="sem-secondary-style"></select>
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">基础颜色</label>
+                    <select id="sem-color-family"></select>
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">明暗</label>
+                    <select id="sem-color-brightness"></select>
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">主材质</label>
+                    <select id="sem-main-material"></select>
+                  </div>
+                </div>
+
+                <div class="flex flex-col gap-2">
+                  <label class="text-sm text-gray-300">辅材质（最多 2 项）</label>
+                  <div id="sem-secondary-materials" class="grid grid-cols-2 md:grid-cols-3 gap-2"></div>
+                </div>
+
+                <div class="flex flex-col gap-2">
+                  <div id="sem-category-details-title" class="text-sm text-gray-300">品类专属标签</div>
+                  <div id="sem-category-details" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">品牌</label>
+                    <input id="sem-brand" type="text" readonly value="" />
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">宽度（mm）</label>
+                    <input id="sem-size-width" type="text" readonly value="" />
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">深度（mm）</label>
+                    <input id="sem-size-depth" type="text" readonly value="" />
+                  </div>
+                  <div class="flex flex-col gap-1.5">
+                    <label class="text-sm text-gray-300">高度（mm）</label>
+                    <input id="sem-size-height" type="text" readonly value="" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="panel-catalog" class="hidden flex flex-col gap-5">
     <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
       <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">资产拼图设置</h2>
@@ -315,6 +474,7 @@
 <script>
 const DEFAULT_CATEGORIES = {{ default_categories | tojson }};
 const DEFAULT_CATALOG_LAYOUT = {{ default_catalog_layout | tojson }};
+const DEFAULT_SEMANTIC_CONFIG = {{ default_semantic_config | tojson }};
 const CATALOG_TYPE_ALIASES = {
   sofa: ['sofa', 'couch'],
   coffee_table: ['coffee_table', 'tea_table'],
@@ -333,12 +493,21 @@ const catalogEditorState = {
   nextBoxId: 1,
 };
 
+const semanticState = {
+  inputDir: '',
+  category: DEFAULT_SEMANTIC_CONFIG.default_category || 'sofa',
+  loadedCategory: null,
+  items: [],
+  selectedImagePath: null,
+};
+
 function switchTab(tab) {
-  ['clean', 'rmbg', 'classify', 'catalog'].forEach(name => {
+  ['clean', 'rmbg', 'classify', 'semantic', 'catalog'].forEach(name => {
     document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== tab);
     document.getElementById(`tab-${name}-btn`).classList.toggle('active', name === tab);
   });
   if (tab === 'catalog') requestAnimationFrame(renderCatalogEditor);
+  if (tab === 'semantic') requestAnimationFrame(renderSemanticReviewPanel);
 }
 
 function setStatus(text, cls) {
@@ -781,6 +950,7 @@ function saveCatalogLayout() {
 DEFAULT_CATEGORIES.forEach(item => addCategoryRow(item.name, item.prompt));
 updateThresholdLabel(document.getElementById('cl-threshold').value);
 setCatalogLayout(DEFAULT_CATALOG_LAYOUT);
+initializeSemanticUI();
 document.getElementById('cg-canvas-width').addEventListener('input', syncCatalogCanvasFromInputs);
 document.getElementById('cg-canvas-height').addEventListener('input', syncCatalogCanvasFromInputs);
 document.getElementById('cg-box-type').addEventListener('input', event => updateSelectedCatalogBoxField('type', event.target.value));
@@ -794,6 +964,1319 @@ window.addEventListener('resize', () => {
 });
 window.addEventListener('pointermove', handleCatalogPointerMove);
 window.addEventListener('pointerup', handleCatalogPointerUp);
+
+let semanticEventSource = null;
+
+function createEmptySemanticTagData() {
+  return {
+    category: DEFAULT_SEMANTIC_CONFIG.default_category || 'sofa',
+    primary_style: '',
+    secondary_style: null,
+    color_family: '',
+    color_brightness: '',
+    main_material: '',
+    secondary_materials: [],
+    layout_shape: '',
+    footprint_shape: '',
+    brand: null,
+    size: {
+      width_mm: null,
+      depth_mm: null,
+      height_mm: null,
+    },
+    file_name: '',
+    relative_path: '',
+    package_name: '',
+    source_image_path: '',
+    prompt_version: '',
+    vlm_model: '',
+    updated_at: '',
+  };
+}
+
+function normalizeSemanticTagData(tagData = {}) {
+  const base = createEmptySemanticTagData();
+  const merged = { ...base, ...(tagData || {}) };
+  const allowedStyles = new Set(DEFAULT_SEMANTIC_CONFIG.enums.styles || []);
+  const allowedColors = new Set(DEFAULT_SEMANTIC_CONFIG.enums.color_families || []);
+  const allowedBrightness = new Set(DEFAULT_SEMANTIC_CONFIG.enums.color_brightness || []);
+  const allowedMaterials = new Set(DEFAULT_SEMANTIC_CONFIG.enums.materials || []);
+  const allowedLayoutShapes = new Set(DEFAULT_SEMANTIC_CONFIG.enums.layout_shapes || []);
+  const allowedFootprintShapes = new Set(DEFAULT_SEMANTIC_CONFIG.enums.footprint_shapes || []);
+
+  const secondaryMaterials = [];
+  (Array.isArray(merged.secondary_materials) ? merged.secondary_materials : []).forEach(value => {
+    const normalized = String(value || '').trim();
+    if (
+      allowedMaterials.has(normalized) &&
+      normalized !== merged.main_material &&
+      !secondaryMaterials.includes(normalized) &&
+      secondaryMaterials.length < 2
+    ) {
+      secondaryMaterials.push(normalized);
+    }
+  });
+
+  return {
+    ...merged,
+    category: DEFAULT_SEMANTIC_CONFIG.default_category || 'sofa',
+    primary_style: allowedStyles.has(merged.primary_style) ? merged.primary_style : '',
+    secondary_style: allowedStyles.has(merged.secondary_style) && merged.secondary_style !== merged.primary_style ? merged.secondary_style : null,
+    color_family: allowedColors.has(merged.color_family) ? merged.color_family : '',
+    color_brightness: allowedBrightness.has(merged.color_brightness) ? merged.color_brightness : '',
+    main_material: allowedMaterials.has(merged.main_material) ? merged.main_material : '',
+    secondary_materials: secondaryMaterials,
+    layout_shape: allowedLayoutShapes.has(merged.layout_shape) ? merged.layout_shape : '',
+    footprint_shape: allowedFootprintShapes.has(merged.footprint_shape) ? merged.footprint_shape : '',
+    brand: null,
+    size: {
+      width_mm: null,
+      depth_mm: null,
+      height_mm: null,
+    },
+    file_name: String(merged.file_name || ''),
+    relative_path: String(merged.relative_path || ''),
+    package_name: String(merged.package_name || ''),
+    source_image_path: String(merged.source_image_path || ''),
+    prompt_version: String(merged.prompt_version || ''),
+    vlm_model: String(merged.vlm_model || ''),
+    updated_at: String(merged.updated_at || ''),
+  };
+}
+
+function normalizeSemanticItem(item = {}) {
+  const status = ['valid', 'invalid', 'missing', 'dirty'].includes(item.status) ? item.status : 'missing';
+  return {
+    file_name: String(item.file_name || ''),
+    image_path: String(item.image_path || ''),
+    json_path: String(item.json_path || ''),
+    status,
+    saved_status: status === 'dirty' ? 'valid' : status,
+    error_message: item.error_message ? String(item.error_message) : null,
+    tag_data: normalizeSemanticTagData(item.tag_data || {}),
+  };
+}
+
+function populateSemanticSelect(id, options, allowEmpty = false, emptyLabel = '请选择') {
+  const select = document.getElementById(id);
+  select.innerHTML = '';
+  if (allowEmpty) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = emptyLabel;
+    select.appendChild(option);
+  }
+  options.forEach(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  });
+}
+
+function initializeSemanticUI() {
+  const categorySelect = document.getElementById('sem-category');
+  categorySelect.innerHTML = '';
+  (DEFAULT_SEMANTIC_CONFIG.category_options || ['sofa']).forEach(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    categorySelect.appendChild(option);
+  });
+  categorySelect.value = DEFAULT_SEMANTIC_CONFIG.default_category || 'sofa';
+
+  populateSemanticSelect('sem-primary-style', DEFAULT_SEMANTIC_CONFIG.enums.styles, true);
+  populateSemanticSelect('sem-secondary-style', DEFAULT_SEMANTIC_CONFIG.enums.styles, true, '无');
+  populateSemanticSelect('sem-color-family', DEFAULT_SEMANTIC_CONFIG.enums.color_families, true);
+  populateSemanticSelect('sem-color-brightness', DEFAULT_SEMANTIC_CONFIG.enums.color_brightness, true);
+  populateSemanticSelect('sem-main-material', DEFAULT_SEMANTIC_CONFIG.enums.materials, true);
+  populateSemanticSelect('sem-layout-shape', DEFAULT_SEMANTIC_CONFIG.enums.layout_shapes, true);
+  populateSemanticSelect('sem-footprint-shape', DEFAULT_SEMANTIC_CONFIG.enums.footprint_shapes, true);
+
+  document.getElementById('sem-category').addEventListener('change', event => {
+    semanticState.category = event.target.value;
+  });
+  document.getElementById('sem-primary-style').addEventListener('change', event => updateSelectedSemanticField('primary_style', event.target.value));
+  document.getElementById('sem-secondary-style').addEventListener('change', event => updateSelectedSemanticField('secondary_style', event.target.value));
+  document.getElementById('sem-color-family').addEventListener('change', event => updateSelectedSemanticField('color_family', event.target.value));
+  document.getElementById('sem-color-brightness').addEventListener('change', event => updateSelectedSemanticField('color_brightness', event.target.value));
+  document.getElementById('sem-main-material').addEventListener('change', event => updateSelectedSemanticField('main_material', event.target.value));
+  document.getElementById('sem-layout-shape').addEventListener('change', event => updateSelectedSemanticField('layout_shape', event.target.value));
+  document.getElementById('sem-footprint-shape').addEventListener('change', event => updateSelectedSemanticField('footprint_shape', event.target.value));
+}
+
+function getSelectedSemanticItem() {
+  return semanticState.items.find(item => item.image_path === semanticState.selectedImagePath) || null;
+}
+
+function getSemanticPreviewUrl(item) {
+  return `/semantic/image?path=${encodeURIComponent(item.image_path)}`;
+}
+
+function getSemanticStatusMeta(status) {
+  if (status === 'valid') return { label: '合法', classes: 'bg-emerald-950/60 text-emerald-300 border-emerald-900' };
+  if (status === 'invalid') return { label: '非法', classes: 'bg-amber-950/60 text-amber-300 border-amber-900' };
+  if (status === 'missing') return { label: '缺失', classes: 'bg-slate-900 text-slate-300 border-slate-700' };
+  return { label: '待保存', classes: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-900' };
+}
+
+function syncSemanticSummary() {
+  const counts = { valid: 0, invalid: 0, missing: 0, dirty: 0 };
+  semanticState.items.forEach(item => {
+    counts[item.status] = (counts[item.status] || 0) + 1;
+  });
+  document.getElementById('sem-review-valid').textContent = counts.valid;
+  document.getElementById('sem-review-invalid').textContent = counts.invalid;
+  document.getElementById('sem-review-missing').textContent = counts.missing;
+  document.getElementById('sem-review-dirty').textContent = counts.dirty;
+  document.getElementById('sem-review-summary').textContent = semanticState.inputDir
+    ? `${semanticState.category} · ${semanticState.items.length} 张图片 · ${semanticState.inputDir}`
+    : '尚未加载任何结果';
+}
+
+function renderSemanticReviewList() {
+  const list = document.getElementById('sem-review-list');
+  list.innerHTML = '';
+  if (semanticState.items.length === 0) {
+    list.innerHTML = '<div class="text-sm text-gray-500">当前目录下还没有可复核的 sofa 图片。</div>';
+    return;
+  }
+
+  semanticState.items.forEach(item => {
+    const meta = getSemanticStatusMeta(item.status);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `text-left rounded-2xl border p-3 transition ${semanticState.selectedImagePath === item.image_path ? 'border-fuchsia-500 bg-fuchsia-950/20' : 'border-gray-800 bg-gray-900 hover:border-gray-700'}`;
+    button.innerHTML = `
+      <div class="flex items-start gap-3">
+        <div class="w-14 h-14 rounded-xl bg-white border border-gray-800 overflow-hidden shrink-0 flex items-center justify-center">
+          <img src="${escHtml(getSemanticPreviewUrl(item))}" alt="${escHtml(item.file_name)}" class="w-full h-full object-contain" />
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center justify-between gap-2">
+            <div class="font-mono text-sm text-gray-100 truncate">${escHtml(item.file_name)}</div>
+            <span class="text-[11px] px-2 py-0.5 rounded-full border ${meta.classes}">${meta.label}</span>
+          </div>
+          <div class="text-xs text-gray-500 mt-1 truncate">${escHtml(item.tag_data.primary_style || '未打标')} / ${escHtml(item.tag_data.color_family || '未打标')}</div>
+          <div class="text-[11px] text-gray-600 mt-1 truncate">${escHtml(item.tag_data.relative_path || item.image_path)}</div>
+        </div>
+      </div>
+    `;
+    button.onclick = () => {
+      semanticState.selectedImagePath = item.image_path;
+      renderSemanticReviewPanel();
+    };
+    list.appendChild(button);
+  });
+}
+
+function renderSemanticSecondaryMaterials() {
+  const container = document.getElementById('sem-secondary-materials');
+  container.innerHTML = '';
+  const item = getSelectedSemanticItem();
+  if (!item) return;
+
+  const selected = item.tag_data.secondary_materials || [];
+  const mainMaterial = item.tag_data.main_material || '';
+
+  (DEFAULT_SEMANTIC_CONFIG.enums.materials || []).forEach(material => {
+    const label = document.createElement('label');
+    const disabled = material === mainMaterial;
+    label.className = `flex items-center gap-2 rounded-xl border px-3 py-2 text-sm ${disabled ? 'border-gray-800 bg-gray-900 text-gray-600' : 'border-gray-800 bg-gray-900 text-gray-200 hover:border-gray-700'}`;
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = material;
+    checkbox.className = 'w-4 h-4 rounded border-gray-700 bg-gray-950 text-fuchsia-500';
+    checkbox.disabled = disabled;
+    checkbox.checked = selected.includes(material);
+    checkbox.addEventListener('change', event => {
+      const checked = Array.from(container.querySelectorAll('input:checked')).map(node => node.value);
+      if (checked.length > 2) {
+        event.target.checked = false;
+        alert('辅材质最多只能选择 2 项');
+        return;
+      }
+      updateSelectedSemanticField('secondary_materials', checked);
+    });
+
+    const text = document.createElement('span');
+    text.textContent = material;
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    container.appendChild(label);
+  });
+}
+
+function renderSemanticEditor() {
+  const editor = document.getElementById('sem-review-editor');
+  const empty = document.getElementById('sem-empty-selection');
+  const item = getSelectedSemanticItem();
+
+  if (!item) {
+    empty.classList.remove('hidden');
+    editor.classList.add('hidden');
+    return;
+  }
+
+  empty.classList.add('hidden');
+  editor.classList.remove('hidden');
+
+  document.getElementById('sem-preview-image').src = getSemanticPreviewUrl(item);
+  document.getElementById('sem-selected-meta').textContent = `${item.tag_data.file_name} · ${item.tag_data.relative_path}`;
+  document.getElementById('sem-selected-status').textContent = item.error_message
+    ? `状态：${getSemanticStatusMeta(item.status).label} · ${item.error_message}`
+    : `状态：${getSemanticStatusMeta(item.status).label}`;
+
+  document.getElementById('sem-primary-style').value = item.tag_data.primary_style || '';
+  document.getElementById('sem-secondary-style').value = item.tag_data.secondary_style || '';
+  document.getElementById('sem-color-family').value = item.tag_data.color_family || '';
+  document.getElementById('sem-color-brightness').value = item.tag_data.color_brightness || '';
+  document.getElementById('sem-main-material').value = item.tag_data.main_material || '';
+  document.getElementById('sem-layout-shape').value = item.tag_data.layout_shape || '';
+  document.getElementById('sem-footprint-shape').value = item.tag_data.footprint_shape || '';
+  document.getElementById('sem-brand').value = item.tag_data.brand == null ? '' : item.tag_data.brand;
+  document.getElementById('sem-size-width').value = item.tag_data.size?.width_mm == null ? '' : item.tag_data.size.width_mm;
+  document.getElementById('sem-size-depth').value = item.tag_data.size?.depth_mm == null ? '' : item.tag_data.size.depth_mm;
+  document.getElementById('sem-size-height').value = item.tag_data.size?.height_mm == null ? '' : item.tag_data.size.height_mm;
+  renderSemanticSecondaryMaterials();
+}
+
+function renderSemanticReviewPanel() {
+  syncSemanticSummary();
+  renderSemanticReviewList();
+  renderSemanticEditor();
+}
+
+function markSemanticItemDirty(item) {
+  if (!item) return;
+  item.status = 'dirty';
+}
+
+function updateSelectedSemanticField(field, value) {
+  const item = getSelectedSemanticItem();
+  if (!item) return;
+
+  if (field === 'secondary_style') {
+    item.tag_data.secondary_style = value || null;
+  } else if (field === 'secondary_materials') {
+    item.tag_data.secondary_materials = Array.isArray(value) ? value.slice(0, 2) : [];
+  } else if (field === 'main_material') {
+    item.tag_data.main_material = value;
+    item.tag_data.secondary_materials = (item.tag_data.secondary_materials || []).filter(material => material !== value).slice(0, 2);
+  } else {
+    item.tag_data[field] = value;
+  }
+
+  if (item.tag_data.secondary_style && item.tag_data.secondary_style === item.tag_data.primary_style) {
+    item.tag_data.secondary_style = null;
+  }
+
+  markSemanticItemDirty(item);
+  renderSemanticReviewPanel();
+}
+
+function validateSemanticTagData(tagData) {
+  if (!tagData.primary_style) return '请选择主风格';
+  if (tagData.secondary_style && tagData.secondary_style === tagData.primary_style) return '次风格不能与主风格相同';
+  if (!tagData.color_family) return '请选择基础颜色';
+  if (!tagData.color_brightness) return '请选择明暗';
+  if (!tagData.main_material) return '请选择主材质';
+  if (!tagData.layout_shape) return '请选择布局形状';
+  if (!tagData.footprint_shape) return '请选择平面轮廓';
+
+  const secondaryMaterials = Array.isArray(tagData.secondary_materials) ? tagData.secondary_materials : [];
+  if (secondaryMaterials.length > 2) return '辅材质最多只能选择 2 项';
+  if (secondaryMaterials.includes(tagData.main_material)) return '辅材质不能包含主材质';
+  if (new Set(secondaryMaterials).size !== secondaryMaterials.length) return '辅材质不能重复';
+  return null;
+}
+
+function setSemanticProgress(current, total) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  document.getElementById('sem-progress-bar').style.width = `${pct}%`;
+  document.getElementById('sem-progress-text').textContent = `${current} / ${total}`;
+}
+
+function setSemanticProcessing(active) {
+  const startBtn = document.getElementById('sem-start-btn');
+  const loadBtn = document.getElementById('sem-load-btn');
+  const saveCurrentBtn = document.getElementById('sem-save-current-btn');
+  const saveAllBtn = document.getElementById('sem-save-all-btn');
+  const reloadBtn = document.getElementById('sem-reload-btn');
+  startBtn.disabled = active;
+  loadBtn.disabled = active;
+  saveCurrentBtn.disabled = active;
+  saveAllBtn.disabled = active;
+  reloadBtn.disabled = active;
+  startBtn.querySelector('span').textContent = active ? '正在批量打标...' : '开始批量打标';
+  if (active) setStatus('语义打标中', 'bg-fuchsia-900 text-fuchsia-300');
+  else if (document.getElementById('status-badge').textContent === '语义打标中') setStatus('空闲', 'bg-gray-800 text-gray-400');
+}
+
+function semanticLog(text, cls) { addLog('sem-log', text, cls); }
+
+function startSemanticTagging() {
+  const inputDir = document.getElementById('sem-input-dir').value.trim();
+  const category = document.getElementById('sem-category').value;
+  const skipExisting = document.getElementById('sem-skip-existing').checked;
+  const maxRetries = parseInt(document.getElementById('sem-max-retries').value, 10);
+  const sleepSeconds = parseFloat(document.getElementById('sem-sleep-seconds').value);
+
+  if (!inputDir) {
+    alert('请填写输入目录');
+    return;
+  }
+  if (!Number.isFinite(maxRetries) || maxRetries < 0) {
+    alert('重试次数必须是大于等于 0 的整数');
+    return;
+  }
+  if (!Number.isFinite(sleepSeconds) || sleepSeconds < 0) {
+    alert('请求间隔必须是大于等于 0 的数字');
+    return;
+  }
+
+  semanticState.inputDir = inputDir;
+  semanticState.category = category;
+  document.getElementById('sem-progress-card').classList.remove('hidden');
+  document.getElementById('sem-log').innerHTML = '';
+  document.getElementById('sem-result-path').textContent = '';
+  document.getElementById('sem-stat-tagged').textContent = '0';
+  document.getElementById('sem-stat-skipped').textContent = '0';
+  document.getElementById('sem-stat-error').textContent = '0';
+  setSemanticProgress(0, 0);
+  setSemanticProcessing(true);
+
+  fetch('/semantic/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: inputDir,
+      category,
+      skip_existing: skipExisting,
+      sleep_seconds: sleepSeconds,
+      max_retries: maxRetries,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      listenSemantic();
+    })
+    .catch(err => {
+      alert(err.message || '启动失败');
+      setSemanticProcessing(false);
+    });
+}
+
+function listenSemantic() {
+  if (semanticEventSource) semanticEventSource.close();
+  semanticEventSource = new EventSource('/semantic/stream');
+  semanticEventSource.onmessage = function (e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+
+    if (msg.type === 'start') {
+      document.getElementById('sem-result-path').textContent = `输入目录：${msg.input_dir}`;
+      semanticLog(`发现 ${msg.total} 张 ${msg.category} 图片，开始批量打标...`, 'text-gray-400');
+      semanticLog(`跳过已有：${msg.skip_existing ? '是' : '否'} · 重试：${msg.max_retries} · 间隔：${msg.sleep_seconds}s`, 'text-gray-500');
+      setSemanticProgress(0, msg.total);
+    }
+
+    if (msg.type === 'progress') {
+      setSemanticProgress(msg.current, msg.total);
+      document.getElementById('sem-stat-tagged').textContent = msg.stats.tagged;
+      document.getElementById('sem-stat-skipped').textContent = msg.stats.skipped_existing;
+      document.getElementById('sem-stat-error').textContent = msg.stats.error;
+
+      if (msg.status === 'tagged') {
+        semanticLog(`入库 ${msg.file}  ->  ${msg.primary_style || '--'} / ${msg.color_family || '--'}`, 'text-fuchsia-300');
+      } else if (msg.status === 'skipped_existing') {
+        semanticLog(`跳过已有 ${msg.file}`, 'text-sky-300');
+      } else {
+        semanticLog(`失败 ${msg.file}`, 'text-red-400');
+      }
+    }
+
+    if (msg.type === 'error_item') {
+      semanticLog(`错误 ${msg.file} -> ${msg.message}`, 'text-red-500');
+    }
+
+    if (msg.type === 'done') {
+      document.getElementById('sem-stat-tagged').textContent = msg.stats.tagged;
+      document.getElementById('sem-stat-skipped').textContent = msg.stats.skipped_existing;
+      document.getElementById('sem-stat-error').textContent = msg.stats.error;
+      semanticLog('────────────────────────────────────────', 'text-gray-700');
+      semanticLog(`完成 · 已打标 ${msg.stats.tagged} · 跳过 ${msg.stats.skipped_existing} · 失败 ${msg.stats.error}`, 'text-white');
+      semanticLog(`当前索引：合法 ${msg.stats.valid} · 非法 ${msg.stats.invalid} · 缺失 ${msg.stats.missing}`, 'text-gray-300');
+      setStatus('完成', 'bg-green-900 text-green-400');
+      setSemanticProcessing(false);
+      semanticEventSource.close();
+      loadSemanticResults({ preserveSelection: true, silent: true });
+    }
+
+    if (msg.type === 'error') {
+      semanticLog(`错误：${msg.message}`, 'text-red-400');
+      setStatus('出错', 'bg-red-900 text-red-400');
+      setSemanticProcessing(false);
+      semanticEventSource.close();
+    }
+  };
+}
+
+function loadSemanticResults(options = {}) {
+  const inputDir = document.getElementById('sem-input-dir').value.trim();
+  const category = document.getElementById('sem-category').value;
+  if (!inputDir) {
+    alert('请填写输入目录');
+    return;
+  }
+
+  const preserveSelection = Boolean(options.preserveSelection);
+  const silent = Boolean(options.silent);
+  const previousSelection = preserveSelection ? semanticState.selectedImagePath : null;
+
+  document.getElementById('sem-load-btn').disabled = true;
+  document.getElementById('sem-load-btn').querySelector('span').textContent = '正在加载...';
+
+  fetch('/semantic/load', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input_dir: inputDir, category }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      semanticState.inputDir = d.input_dir;
+      semanticState.category = d.category;
+      semanticState.items = (d.items || []).map(normalizeSemanticItem);
+      semanticState.selectedImagePath = previousSelection && semanticState.items.some(item => item.image_path === previousSelection)
+        ? previousSelection
+        : (semanticState.items[0]?.image_path || null);
+      document.getElementById('sem-review-card').classList.remove('hidden');
+      renderSemanticReviewPanel();
+      if (!silent) {
+        semanticLog(`已加载 ${semanticState.items.length} 张 ${semanticState.category} 图片的复核结果`, 'text-gray-400');
+      }
+    })
+    .catch(err => {
+      alert(err.message || '加载失败');
+    })
+    .finally(() => {
+      document.getElementById('sem-load-btn').disabled = false;
+      document.getElementById('sem-load-btn').querySelector('span').textContent = '加载已有结果';
+    });
+}
+
+function mergeSavedSemanticItems(savedItems) {
+  const savedMap = new Map((savedItems || []).map(item => [item.image_path, normalizeSemanticItem(item)]));
+  semanticState.items = semanticState.items.map(item => savedMap.get(item.image_path) || item);
+  if (semanticState.selectedImagePath && savedMap.has(semanticState.selectedImagePath)) {
+    semanticState.selectedImagePath = savedMap.get(semanticState.selectedImagePath).image_path;
+  }
+}
+
+function saveSemanticItems(items, successText) {
+  fetch('/semantic/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: semanticState.inputDir,
+      category: semanticState.category,
+      items,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      mergeSavedSemanticItems(d.items || []);
+      renderSemanticReviewPanel();
+      semanticLog(`${successText} · 已同步重建 semantic_tags.jsonl`, 'text-emerald-300');
+    })
+    .catch(err => {
+      alert(err.message || '保存失败');
+    });
+}
+
+function saveCurrentSemanticItem() {
+  const item = getSelectedSemanticItem();
+  if (!item) {
+    alert('请先选择一张图片');
+    return;
+  }
+  const validationError = validateSemanticTagData(item.tag_data);
+  if (validationError) {
+    alert(validationError);
+    return;
+  }
+  saveSemanticItems([{ image_path: item.image_path, tag_data: item.tag_data }], `已保存 ${item.file_name}`);
+}
+
+function saveAllSemanticItems() {
+  const dirtyItems = semanticState.items.filter(item => item.status === 'dirty');
+  if (dirtyItems.length === 0) {
+    alert('当前没有待保存的修改');
+    return;
+  }
+  for (const item of dirtyItems) {
+    const validationError = validateSemanticTagData(item.tag_data);
+    if (validationError) {
+      alert(`${item.file_name}：${validationError}`);
+      return;
+    }
+  }
+  saveSemanticItems(
+    dirtyItems.map(item => ({ image_path: item.image_path, tag_data: item.tag_data })),
+    `已保存 ${dirtyItems.length} 项修改`,
+  );
+}
+
+function getDefaultSemanticCategory() {
+  return DEFAULT_SEMANTIC_CONFIG.default_category || (DEFAULT_SEMANTIC_CONFIG.category_options || [])[0] || 'sofa';
+}
+
+function getSemanticSharedEnums() {
+  return DEFAULT_SEMANTIC_CONFIG.shared_enums || DEFAULT_SEMANTIC_CONFIG.enums || {};
+}
+
+function getSemanticCategoryOptions() {
+  const options = DEFAULT_SEMANTIC_CONFIG.category_options || [];
+  return Array.isArray(options) && options.length ? options : [getDefaultSemanticCategory()];
+}
+
+function isSemanticCategorySupported(category) {
+  return getSemanticCategoryOptions().includes(String(category || '').trim());
+}
+
+function getSemanticCategoryLabel(category) {
+  const normalized = String(category || '').trim();
+  const labels = DEFAULT_SEMANTIC_CONFIG.category_labels || {};
+  return labels[normalized] || normalized || getDefaultSemanticCategory();
+}
+
+function getSemanticCategorySchema(category) {
+  const schemas = DEFAULT_SEMANTIC_CONFIG.category_schemas || {};
+  const normalized = isSemanticCategorySupported(category) ? String(category).trim() : getDefaultSemanticCategory();
+  return schemas[normalized] || { label: getSemanticCategoryLabel(normalized), detail_fields: [] };
+}
+
+function createEmptySemanticCategoryDetails(category) {
+  const details = {};
+  getSemanticCategorySchema(category).detail_fields.forEach(field => {
+    details[field.name] = '';
+  });
+  return details;
+}
+
+function normalizeSemanticCategoryDetails(category, details = {}, fallbackSource = {}) {
+  const schema = getSemanticCategorySchema(category);
+  const source = details && typeof details === 'object' && !Array.isArray(details) ? details : {};
+  const legacySource = category === 'sofa'
+    ? {
+        layout_shape: fallbackSource.layout_shape,
+        footprint_shape: fallbackSource.footprint_shape,
+      }
+    : {};
+  const normalized = createEmptySemanticCategoryDetails(category);
+
+  schema.detail_fields.forEach(field => {
+    const rawValue = source[field.name] ?? legacySource[field.name] ?? '';
+    const value = String(rawValue || '').trim();
+    normalized[field.name] = field.options.includes(value) ? value : '';
+  });
+
+  return normalized;
+}
+
+function createEmptySemanticTagData(category = getDefaultSemanticCategory()) {
+  const normalizedCategory = isSemanticCategorySupported(category) ? category : getDefaultSemanticCategory();
+  return {
+    category: normalizedCategory,
+    primary_style: '',
+    secondary_style: null,
+    color_family: '',
+    color_brightness: '',
+    main_material: '',
+    secondary_materials: [],
+    category_details: createEmptySemanticCategoryDetails(normalizedCategory),
+    brand: null,
+    size: {
+      width_mm: null,
+      depth_mm: null,
+      height_mm: null,
+    },
+    file_name: '',
+    relative_path: '',
+    package_name: '',
+    source_image_path: '',
+    prompt_version: 'semantic_multicategory_v2',
+    vlm_model: '',
+    updated_at: '',
+  };
+}
+
+function normalizeSemanticTagData(tagData = {}, fallbackCategory = getDefaultSemanticCategory()) {
+  const category = isSemanticCategorySupported(tagData?.category)
+    ? String(tagData.category).trim()
+    : (isSemanticCategorySupported(fallbackCategory) ? String(fallbackCategory).trim() : getDefaultSemanticCategory());
+  const base = createEmptySemanticTagData(category);
+  const merged = { ...base, ...(tagData || {}) };
+  const sharedEnums = getSemanticSharedEnums();
+  const allowedStyles = new Set(sharedEnums.styles || []);
+  const allowedColors = new Set(sharedEnums.color_families || []);
+  const allowedBrightness = new Set(sharedEnums.color_brightness || []);
+  const allowedMaterials = new Set(sharedEnums.materials || []);
+
+  const secondaryMaterials = [];
+  (Array.isArray(merged.secondary_materials) ? merged.secondary_materials : []).forEach(value => {
+    const normalized = String(value || '').trim();
+    if (
+      allowedMaterials.has(normalized) &&
+      normalized !== merged.main_material &&
+      !secondaryMaterials.includes(normalized) &&
+      secondaryMaterials.length < 2
+    ) {
+      secondaryMaterials.push(normalized);
+    }
+  });
+
+  return {
+    ...merged,
+    category,
+    primary_style: allowedStyles.has(merged.primary_style) ? merged.primary_style : '',
+    secondary_style: allowedStyles.has(merged.secondary_style) && merged.secondary_style !== merged.primary_style ? merged.secondary_style : null,
+    color_family: allowedColors.has(merged.color_family) ? merged.color_family : '',
+    color_brightness: allowedBrightness.has(merged.color_brightness) ? merged.color_brightness : '',
+    main_material: allowedMaterials.has(merged.main_material) ? merged.main_material : '',
+    secondary_materials: secondaryMaterials,
+    category_details: normalizeSemanticCategoryDetails(category, merged.category_details, merged),
+    brand: null,
+    size: {
+      width_mm: null,
+      depth_mm: null,
+      height_mm: null,
+    },
+    file_name: String(merged.file_name || ''),
+    relative_path: String(merged.relative_path || ''),
+    package_name: String(merged.package_name || ''),
+    source_image_path: String(merged.source_image_path || ''),
+    prompt_version: String(merged.prompt_version || 'semantic_multicategory_v2'),
+    vlm_model: String(merged.vlm_model || ''),
+    updated_at: String(merged.updated_at || ''),
+  };
+}
+
+function normalizeSemanticItem(item = {}) {
+  const status = ['valid', 'invalid', 'missing', 'dirty'].includes(item.status) ? item.status : 'missing';
+  const fallbackCategory = item?.tag_data?.category || semanticState.loadedCategory || semanticState.category;
+  return {
+    file_name: String(item.file_name || ''),
+    image_path: String(item.image_path || ''),
+    json_path: String(item.json_path || ''),
+    status,
+    saved_status: status === 'dirty' ? 'valid' : status,
+    error_message: item.error_message ? String(item.error_message) : null,
+    tag_data: normalizeSemanticTagData(item.tag_data || {}, fallbackCategory),
+  };
+}
+
+function populateSemanticSelect(id, options, allowEmpty = false, emptyLabel = '请选择') {
+  const select = document.getElementById(id);
+  select.innerHTML = '';
+  if (allowEmpty) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = emptyLabel;
+    select.appendChild(option);
+  }
+  (options || []).forEach(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  });
+}
+
+function resetSemanticLoadedItems() {
+  semanticState.loadedCategory = null;
+  semanticState.items = [];
+  semanticState.selectedImagePath = null;
+  document.getElementById('sem-review-card').classList.add('hidden');
+}
+
+function initializeSemanticUI() {
+  const categorySelect = document.getElementById('sem-category');
+  categorySelect.innerHTML = '';
+  getSemanticCategoryOptions().forEach(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = getSemanticCategoryLabel(value);
+    categorySelect.appendChild(option);
+  });
+  categorySelect.value = semanticState.category;
+
+  const sharedEnums = getSemanticSharedEnums();
+  populateSemanticSelect('sem-primary-style', sharedEnums.styles || [], true);
+  populateSemanticSelect('sem-secondary-style', sharedEnums.styles || [], true, '无');
+  populateSemanticSelect('sem-color-family', sharedEnums.color_families || [], true);
+  populateSemanticSelect('sem-color-brightness', sharedEnums.color_brightness || [], true);
+  populateSemanticSelect('sem-main-material', sharedEnums.materials || [], true);
+
+  document.getElementById('sem-category').addEventListener('change', event => {
+    const nextCategory = event.target.value;
+    const categoryChanged = semanticState.loadedCategory && semanticState.loadedCategory !== nextCategory;
+    const hasDirtyItems = semanticState.items.some(item => item.status === 'dirty');
+
+    if (categoryChanged && hasDirtyItems) {
+      const confirmed = window.confirm('当前复核区有未保存的修改，切换品类会清空当前列表。确定继续吗？');
+      if (!confirmed) {
+        event.target.value = semanticState.category;
+        return;
+      }
+    }
+
+    semanticState.category = nextCategory;
+    if (categoryChanged) {
+      resetSemanticLoadedItems();
+      semanticLog(`已切换到 ${getSemanticCategoryLabel(nextCategory)}，请重新加载该品类结果。`, 'text-gray-500');
+    }
+    renderSemanticReviewPanel();
+  });
+
+  document.getElementById('sem-primary-style').addEventListener('change', event => updateSelectedSemanticField('primary_style', event.target.value));
+  document.getElementById('sem-secondary-style').addEventListener('change', event => updateSelectedSemanticField('secondary_style', event.target.value));
+  document.getElementById('sem-color-family').addEventListener('change', event => updateSelectedSemanticField('color_family', event.target.value));
+  document.getElementById('sem-color-brightness').addEventListener('change', event => updateSelectedSemanticField('color_brightness', event.target.value));
+  document.getElementById('sem-main-material').addEventListener('change', event => updateSelectedSemanticField('main_material', event.target.value));
+}
+
+function getSelectedSemanticItem() {
+  return semanticState.items.find(item => item.image_path === semanticState.selectedImagePath) || null;
+}
+
+function getSemanticPreviewUrl(item) {
+  return `/semantic/image?path=${encodeURIComponent(item.image_path)}`;
+}
+
+function getSemanticStatusMeta(status) {
+  if (status === 'valid') return { label: '合法', classes: 'bg-emerald-950/60 text-emerald-300 border-emerald-900' };
+  if (status === 'invalid') return { label: '非法', classes: 'bg-amber-950/60 text-amber-300 border-amber-900' };
+  if (status === 'missing') return { label: '缺失', classes: 'bg-slate-900 text-slate-300 border-slate-700' };
+  return { label: '待保存', classes: 'bg-fuchsia-950/60 text-fuchsia-300 border-fuchsia-900' };
+}
+
+function getSemanticListSubtitle(item) {
+  const parts = [
+    item.tag_data.primary_style || '未打标',
+    item.tag_data.color_family || '未打标',
+  ];
+  const detailValues = Object.values(item.tag_data.category_details || {}).filter(Boolean);
+  if (detailValues.length > 0) {
+    parts.push(detailValues[0]);
+  }
+  return parts.join(' / ');
+}
+
+function syncSemanticSummary() {
+  const counts = { valid: 0, invalid: 0, missing: 0, dirty: 0 };
+  semanticState.items.forEach(item => {
+    counts[item.status] = (counts[item.status] || 0) + 1;
+  });
+  document.getElementById('sem-review-valid').textContent = counts.valid;
+  document.getElementById('sem-review-invalid').textContent = counts.invalid;
+  document.getElementById('sem-review-missing').textContent = counts.missing;
+  document.getElementById('sem-review-dirty').textContent = counts.dirty;
+
+  const activeCategory = semanticState.loadedCategory || semanticState.category;
+  document.getElementById('sem-review-summary').textContent = semanticState.inputDir
+    ? `${getSemanticCategoryLabel(activeCategory)} · ${semanticState.items.length} 张图片 · ${semanticState.inputDir}`
+    : '尚未加载任何结果';
+}
+
+function renderSemanticReviewList() {
+  const list = document.getElementById('sem-review-list');
+  list.innerHTML = '';
+  if (semanticState.items.length === 0) {
+    list.innerHTML = `<div class="text-sm text-gray-500">当前目录下还没有可复核的 ${escHtml(getSemanticCategoryLabel(semanticState.category))} 图片。</div>`;
+    return;
+  }
+
+  semanticState.items.forEach(item => {
+    const meta = getSemanticStatusMeta(item.status);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `text-left rounded-2xl border p-3 transition ${semanticState.selectedImagePath === item.image_path ? 'border-fuchsia-500 bg-fuchsia-950/20' : 'border-gray-800 bg-gray-900 hover:border-gray-700'}`;
+    button.innerHTML = `
+      <div class="flex items-start gap-3">
+        <div class="w-14 h-14 rounded-xl bg-white border border-gray-800 overflow-hidden shrink-0 flex items-center justify-center">
+          <img src="${escHtml(getSemanticPreviewUrl(item))}" alt="${escHtml(item.file_name)}" class="w-full h-full object-contain" />
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center justify-between gap-2">
+            <div class="font-mono text-sm text-gray-100 truncate">${escHtml(item.file_name)}</div>
+            <span class="text-[11px] px-2 py-0.5 rounded-full border ${meta.classes}">${meta.label}</span>
+          </div>
+          <div class="text-xs text-gray-500 mt-1 truncate">${escHtml(getSemanticListSubtitle(item))}</div>
+          <div class="text-[11px] text-gray-600 mt-1 truncate">${escHtml(item.tag_data.relative_path || item.image_path)}</div>
+        </div>
+      </div>
+    `;
+    button.onclick = () => {
+      semanticState.selectedImagePath = item.image_path;
+      renderSemanticReviewPanel();
+    };
+    list.appendChild(button);
+  });
+}
+
+function renderSemanticSecondaryMaterials() {
+  const container = document.getElementById('sem-secondary-materials');
+  container.innerHTML = '';
+  const item = getSelectedSemanticItem();
+  if (!item) return;
+
+  const selected = item.tag_data.secondary_materials || [];
+  const mainMaterial = item.tag_data.main_material || '';
+  const sharedEnums = getSemanticSharedEnums();
+
+  (sharedEnums.materials || []).forEach(material => {
+    const label = document.createElement('label');
+    const disabled = material === mainMaterial;
+    label.className = `flex items-center gap-2 rounded-xl border px-3 py-2 text-sm ${disabled ? 'border-gray-800 bg-gray-900 text-gray-600' : 'border-gray-800 bg-gray-900 text-gray-200 hover:border-gray-700'}`;
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = material;
+    checkbox.className = 'w-4 h-4 rounded border-gray-700 bg-gray-950 text-fuchsia-500';
+    checkbox.disabled = disabled;
+    checkbox.checked = selected.includes(material);
+    checkbox.addEventListener('change', event => {
+      const checked = Array.from(container.querySelectorAll('input:checked')).map(node => node.value);
+      if (checked.length > 2) {
+        event.target.checked = false;
+        alert('辅材质最多只能选择 2 项');
+        return;
+      }
+      updateSelectedSemanticField('secondary_materials', checked);
+    });
+
+    const text = document.createElement('span');
+    text.textContent = material;
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    container.appendChild(label);
+  });
+}
+
+function renderSemanticCategoryDetails(item) {
+  const title = document.getElementById('sem-category-details-title');
+  const container = document.getElementById('sem-category-details');
+  container.innerHTML = '';
+
+  if (!item) {
+    title.textContent = '品类专属标签';
+    return;
+  }
+
+  const category = item.tag_data.category || semanticState.category;
+  const schema = getSemanticCategorySchema(category);
+  title.textContent = `${schema.label || getSemanticCategoryLabel(category)}专属标签`;
+
+  if (!schema.detail_fields.length) {
+    container.innerHTML = '<div class="text-sm text-gray-500">当前品类没有额外字段。</div>';
+    return;
+  }
+
+  schema.detail_fields.forEach(field => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex flex-col gap-1.5';
+
+    const label = document.createElement('label');
+    label.className = 'text-sm text-gray-300';
+    label.textContent = field.label;
+
+    const select = document.createElement('select');
+    const emptyOption = document.createElement('option');
+    emptyOption.value = '';
+    emptyOption.textContent = '请选择';
+    select.appendChild(emptyOption);
+
+    field.options.forEach(optionValue => {
+      const option = document.createElement('option');
+      option.value = optionValue;
+      option.textContent = optionValue;
+      select.appendChild(option);
+    });
+
+    select.value = item.tag_data.category_details?.[field.name] || '';
+    select.addEventListener('change', event => updateSelectedSemanticField(`category_details.${field.name}`, event.target.value));
+
+    wrapper.appendChild(label);
+    wrapper.appendChild(select);
+    container.appendChild(wrapper);
+  });
+}
+
+function renderSemanticEditor() {
+  const editor = document.getElementById('sem-review-editor');
+  const empty = document.getElementById('sem-empty-selection');
+  const item = getSelectedSemanticItem();
+
+  if (!item) {
+    empty.classList.remove('hidden');
+    editor.classList.add('hidden');
+    renderSemanticCategoryDetails(null);
+    return;
+  }
+
+  empty.classList.add('hidden');
+  editor.classList.remove('hidden');
+
+  document.getElementById('sem-preview-image').src = getSemanticPreviewUrl(item);
+  document.getElementById('sem-selected-meta').textContent = `${getSemanticCategoryLabel(item.tag_data.category)} · ${item.tag_data.file_name} · ${item.tag_data.relative_path}`;
+  document.getElementById('sem-selected-status').textContent = item.error_message
+    ? `状态：${getSemanticStatusMeta(item.status).label} · ${item.error_message}`
+    : `状态：${getSemanticStatusMeta(item.status).label}`;
+
+  document.getElementById('sem-primary-style').value = item.tag_data.primary_style || '';
+  document.getElementById('sem-secondary-style').value = item.tag_data.secondary_style || '';
+  document.getElementById('sem-color-family').value = item.tag_data.color_family || '';
+  document.getElementById('sem-color-brightness').value = item.tag_data.color_brightness || '';
+  document.getElementById('sem-main-material').value = item.tag_data.main_material || '';
+  document.getElementById('sem-brand').value = item.tag_data.brand == null ? '' : item.tag_data.brand;
+  document.getElementById('sem-size-width').value = item.tag_data.size?.width_mm == null ? '' : item.tag_data.size.width_mm;
+  document.getElementById('sem-size-depth').value = item.tag_data.size?.depth_mm == null ? '' : item.tag_data.size.depth_mm;
+  document.getElementById('sem-size-height').value = item.tag_data.size?.height_mm == null ? '' : item.tag_data.size.height_mm;
+  renderSemanticSecondaryMaterials();
+  renderSemanticCategoryDetails(item);
+}
+
+function renderSemanticReviewPanel() {
+  syncSemanticSummary();
+  renderSemanticReviewList();
+  renderSemanticEditor();
+}
+
+function markSemanticItemDirty(item) {
+  if (!item) return;
+  item.status = 'dirty';
+}
+
+function updateSelectedSemanticField(field, value) {
+  const item = getSelectedSemanticItem();
+  if (!item) return;
+
+  item.tag_data = normalizeSemanticTagData(item.tag_data, item.tag_data.category || semanticState.category);
+
+  if (field === 'secondary_style') {
+    item.tag_data.secondary_style = value || null;
+  } else if (field === 'secondary_materials') {
+    item.tag_data.secondary_materials = Array.isArray(value) ? value.slice(0, 2) : [];
+  } else if (field === 'main_material') {
+    item.tag_data.main_material = value;
+    item.tag_data.secondary_materials = (item.tag_data.secondary_materials || []).filter(material => material !== value).slice(0, 2);
+  } else if (field.startsWith('category_details.')) {
+    const detailField = field.replace('category_details.', '');
+    item.tag_data.category_details = {
+      ...(item.tag_data.category_details || {}),
+      [detailField]: value,
+    };
+  } else {
+    item.tag_data[field] = value;
+  }
+
+  if (item.tag_data.secondary_style && item.tag_data.secondary_style === item.tag_data.primary_style) {
+    item.tag_data.secondary_style = null;
+  }
+
+  item.tag_data = normalizeSemanticTagData(item.tag_data, item.tag_data.category || semanticState.category);
+  markSemanticItemDirty(item);
+  renderSemanticReviewPanel();
+}
+
+function validateSemanticTagData(tagData) {
+  const normalized = normalizeSemanticTagData(tagData, tagData?.category || semanticState.category);
+  if (!normalized.primary_style) return '请选择主风格';
+  if (normalized.secondary_style && normalized.secondary_style === normalized.primary_style) return '次风格不能与主风格相同';
+  if (!normalized.color_family) return '请选择基础颜色';
+  if (!normalized.color_brightness) return '请选择明暗';
+  if (!normalized.main_material) return '请选择主材质';
+
+  const secondaryMaterials = Array.isArray(normalized.secondary_materials) ? normalized.secondary_materials : [];
+  if (secondaryMaterials.length > 2) return '辅材质最多只能选择 2 项';
+  if (secondaryMaterials.includes(normalized.main_material)) return '辅材质不能包含主材质';
+  if (new Set(secondaryMaterials).size !== secondaryMaterials.length) return '辅材质不能重复';
+
+  const schema = getSemanticCategorySchema(normalized.category);
+  const details = normalized.category_details || {};
+  const expectedNames = schema.detail_fields.map(field => field.name);
+  const actualNames = Object.keys(details);
+  const extraNames = actualNames.filter(name => !expectedNames.includes(name));
+  if (extraNames.length > 0) return `${getSemanticCategoryLabel(normalized.category)} 的专属字段存在未允许项`;
+
+  for (const field of schema.detail_fields) {
+    const value = String(details[field.name] || '').trim();
+    if (!value) return `请选择${field.label}`;
+    if (!field.options.includes(value)) return `${field.label} 取值不合法`;
+  }
+
+  return null;
+}
+
+function setSemanticProgress(current, total) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  document.getElementById('sem-progress-bar').style.width = `${pct}%`;
+  document.getElementById('sem-progress-text').textContent = `${current} / ${total}`;
+}
+
+function setSemanticProcessing(active) {
+  const startBtn = document.getElementById('sem-start-btn');
+  const loadBtn = document.getElementById('sem-load-btn');
+  const saveCurrentBtn = document.getElementById('sem-save-current-btn');
+  const saveAllBtn = document.getElementById('sem-save-all-btn');
+  const reloadBtn = document.getElementById('sem-reload-btn');
+  const inputDirInput = document.getElementById('sem-input-dir');
+  const categorySelect = document.getElementById('sem-category');
+  const retryInput = document.getElementById('sem-max-retries');
+  const sleepInput = document.getElementById('sem-sleep-seconds');
+  const skipCheckbox = document.getElementById('sem-skip-existing');
+
+  startBtn.disabled = active;
+  loadBtn.disabled = active;
+  saveCurrentBtn.disabled = active;
+  saveAllBtn.disabled = active;
+  reloadBtn.disabled = active;
+  inputDirInput.disabled = active;
+  categorySelect.disabled = active;
+  retryInput.disabled = active;
+  sleepInput.disabled = active;
+  skipCheckbox.disabled = active;
+  startBtn.querySelector('span').textContent = active ? '正在批量打标...' : '开始批量打标';
+
+  if (active) setStatus('语义打标中', 'bg-fuchsia-900 text-fuchsia-300');
+  else if (document.getElementById('status-badge').textContent === '语义打标中') setStatus('空闲', 'bg-gray-800 text-gray-400');
+}
+
+function semanticLog(text, cls) {
+  addLog('sem-log', text, cls);
+}
+
+function startSemanticTagging() {
+  const inputDir = document.getElementById('sem-input-dir').value.trim();
+  const category = document.getElementById('sem-category').value;
+  const skipExisting = document.getElementById('sem-skip-existing').checked;
+  const maxRetries = parseInt(document.getElementById('sem-max-retries').value, 10);
+  const sleepSeconds = parseFloat(document.getElementById('sem-sleep-seconds').value);
+
+  if (!inputDir) {
+    alert('请填写输入目录');
+    return;
+  }
+  if (!Number.isFinite(maxRetries) || maxRetries < 0) {
+    alert('重试次数必须是大于等于 0 的整数');
+    return;
+  }
+  if (!Number.isFinite(sleepSeconds) || sleepSeconds < 0) {
+    alert('请求间隔必须是大于等于 0 的数字');
+    return;
+  }
+
+  semanticState.inputDir = inputDir;
+  semanticState.category = category;
+  document.getElementById('sem-progress-card').classList.remove('hidden');
+  document.getElementById('sem-log').innerHTML = '';
+  document.getElementById('sem-result-path').textContent = '';
+  document.getElementById('sem-stat-tagged').textContent = '0';
+  document.getElementById('sem-stat-skipped').textContent = '0';
+  document.getElementById('sem-stat-error').textContent = '0';
+  setSemanticProgress(0, 0);
+  setSemanticProcessing(true);
+
+  fetch('/semantic/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: inputDir,
+      category,
+      skip_existing: skipExisting,
+      sleep_seconds: sleepSeconds,
+      max_retries: maxRetries,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      listenSemantic();
+    })
+    .catch(err => {
+      alert(err.message || '启动失败');
+      setSemanticProcessing(false);
+    });
+}
+
+function listenSemantic() {
+  if (semanticEventSource) semanticEventSource.close();
+  semanticEventSource = new EventSource('/semantic/stream');
+  semanticEventSource.onmessage = function (e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'ping') return;
+
+    if (msg.type === 'start') {
+      document.getElementById('sem-result-path').textContent = `输入目录：${msg.input_dir}`;
+      semanticLog(`发现 ${msg.total} 张 ${getSemanticCategoryLabel(msg.category)} 图片，开始批量打标...`, 'text-gray-400');
+      semanticLog(`跳过已有：${msg.skip_existing ? '是' : '否'} · 重试：${msg.max_retries} · 间隔：${msg.sleep_seconds}s`, 'text-gray-500');
+      setSemanticProgress(0, msg.total);
+    }
+
+    if (msg.type === 'progress') {
+      setSemanticProgress(msg.current, msg.total);
+      document.getElementById('sem-stat-tagged').textContent = msg.stats.tagged;
+      document.getElementById('sem-stat-skipped').textContent = msg.stats.skipped_existing;
+      document.getElementById('sem-stat-error').textContent = msg.stats.error;
+
+      if (msg.status === 'tagged') {
+        semanticLog(`已写入 ${msg.file} -> ${msg.primary_style || '--'} / ${msg.color_family || '--'}`, 'text-fuchsia-300');
+      } else if (msg.status === 'skipped_existing') {
+        semanticLog(`跳过已有 ${msg.file}`, 'text-sky-300');
+      } else {
+        semanticLog(`失败 ${msg.file}`, 'text-red-400');
+      }
+    }
+
+    if (msg.type === 'error_item') {
+      semanticLog(`错误 ${msg.file} -> ${msg.message}`, 'text-red-500');
+    }
+
+    if (msg.type === 'done') {
+      document.getElementById('sem-stat-tagged').textContent = msg.stats.tagged;
+      document.getElementById('sem-stat-skipped').textContent = msg.stats.skipped_existing;
+      document.getElementById('sem-stat-error').textContent = msg.stats.error;
+      semanticLog('----------------------------------------', 'text-gray-700');
+      semanticLog(`完成 · 已打标 ${msg.stats.tagged} · 跳过 ${msg.stats.skipped_existing} · 失败 ${msg.stats.error}`, 'text-white');
+      semanticLog(`当前索引：合法 ${msg.stats.valid} · 非法 ${msg.stats.invalid} · 缺失 ${msg.stats.missing}`, 'text-gray-300');
+      setStatus('完成', 'bg-green-900 text-green-400');
+      setSemanticProcessing(false);
+      semanticEventSource.close();
+      loadSemanticResults({ preserveSelection: true, silent: true });
+    }
+
+    if (msg.type === 'error') {
+      semanticLog(`错误：${msg.message}`, 'text-red-400');
+      setStatus('出错', 'bg-red-900 text-red-400');
+      setSemanticProcessing(false);
+      semanticEventSource.close();
+    }
+  };
+}
+
+function loadSemanticResults(options = {}) {
+  const inputDir = document.getElementById('sem-input-dir').value.trim();
+  const category = document.getElementById('sem-category').value;
+  if (!inputDir) {
+    alert('请填写输入目录');
+    return;
+  }
+
+  const preserveSelection = Boolean(options.preserveSelection);
+  const silent = Boolean(options.silent);
+  const previousSelection = preserveSelection && semanticState.loadedCategory === category ? semanticState.selectedImagePath : null;
+
+  document.getElementById('sem-load-btn').disabled = true;
+  document.getElementById('sem-load-btn').querySelector('span').textContent = '正在加载...';
+
+  fetch('/semantic/load', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input_dir: inputDir, category }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      semanticState.inputDir = d.input_dir;
+      semanticState.category = d.category;
+      semanticState.loadedCategory = d.category;
+      semanticState.items = (d.items || []).map(normalizeSemanticItem);
+      semanticState.selectedImagePath = previousSelection && semanticState.items.some(item => item.image_path === previousSelection)
+        ? previousSelection
+        : (semanticState.items[0]?.image_path || null);
+      document.getElementById('sem-category').value = d.category;
+      document.getElementById('sem-review-card').classList.remove('hidden');
+      renderSemanticReviewPanel();
+      if (!silent) {
+        semanticLog(`已加载 ${semanticState.items.length} 张 ${getSemanticCategoryLabel(semanticState.category)} 图片的复核结果`, 'text-gray-400');
+      }
+    })
+    .catch(err => {
+      alert(err.message || '加载失败');
+    })
+    .finally(() => {
+      document.getElementById('sem-load-btn').disabled = false;
+      document.getElementById('sem-load-btn').querySelector('span').textContent = '加载已有结果';
+    });
+}
+
+function mergeSavedSemanticItems(savedItems) {
+  const savedMap = new Map((savedItems || []).map(item => [item.image_path, normalizeSemanticItem(item)]));
+  semanticState.items = semanticState.items.map(item => savedMap.get(item.image_path) || item);
+  if (semanticState.selectedImagePath && savedMap.has(semanticState.selectedImagePath)) {
+    semanticState.selectedImagePath = savedMap.get(semanticState.selectedImagePath).image_path;
+  }
+}
+
+function saveSemanticItems(items, successText) {
+  fetch('/semantic/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: semanticState.inputDir,
+      category: semanticState.category,
+      items,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      mergeSavedSemanticItems(d.items || []);
+      renderSemanticReviewPanel();
+      semanticLog(`${successText} · 已同步重建 semantic_tags.jsonl`, 'text-emerald-300');
+    })
+    .catch(err => {
+      alert(err.message || '保存失败');
+    });
+}
+
+function saveCurrentSemanticItem() {
+  const item = getSelectedSemanticItem();
+  if (!item) {
+    alert('请先选择一张图片');
+    return;
+  }
+  const validationError = validateSemanticTagData(item.tag_data);
+  if (validationError) {
+    alert(validationError);
+    return;
+  }
+  saveSemanticItems([{ image_path: item.image_path, tag_data: item.tag_data }], `已保存 ${item.file_name}`);
+}
+
+function saveAllSemanticItems() {
+  const dirtyItems = semanticState.items.filter(item => item.status === 'dirty');
+  if (dirtyItems.length === 0) {
+    alert('当前没有待保存的修改');
+    return;
+  }
+  for (const item of dirtyItems) {
+    const validationError = validateSemanticTagData(item.tag_data);
+    if (validationError) {
+      alert(`${item.file_name}：${validationError}`);
+      return;
+    }
+  }
+  saveSemanticItems(
+    dirtyItems.map(item => ({ image_path: item.image_path, tag_data: item.tag_data })),
+    `已保存 ${dirtyItems.length} 项修改`,
+  );
+}
 
 let cleanEventSource = null;
 

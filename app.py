@@ -13,9 +13,17 @@ from copy import deepcopy
 from pathlib import Path
 
 from asset_catalog_grid import DEFAULT_CATALOG_LAYOUT, normalize_layout_config
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, abort, render_template_string, request, send_file
 from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_WIDTH
 from PIL import Image
+from semantic_tagger import (
+    DEFAULT_MAX_RETRIES as DEFAULT_SEMANTIC_MAX_RETRIES,
+    DEFAULT_SLEEP_SECONDS as DEFAULT_SEMANTIC_SLEEP_SECONDS,
+    SEMANTIC_FRONTEND_CONFIG,
+    build_semantic_tags,
+    load_semantic_review_data,
+    save_semantic_review_items,
+)
 
 app = Flask(__name__)
 
@@ -70,6 +78,9 @@ _clip_device = None
 
 _catalog_queue: queue.Queue = queue.Queue()
 _catalog_processing = False
+
+_semantic_queue: queue.Queue = queue.Queue()
+_semantic_processing = False
 
 # ── 默认分类 ──────────────────────────────────────────────────────────────────
 DEFAULT_CATEGORIES = [
@@ -876,6 +887,9 @@ def index():
         HTML,
         default_categories=_load_categories(),
         default_catalog_layout=_load_catalog_layout(),
+        default_semantic_config=SEMANTIC_FRONTEND_CONFIG,
+        default_semantic_sleep_seconds=DEFAULT_SEMANTIC_SLEEP_SECONDS,
+        default_semantic_max_retries=DEFAULT_SEMANTIC_MAX_RETRIES,
         default_clean_edge_width=DEFAULT_EDGE_WIDTH,
         default_clean_edge_threshold=int(DEFAULT_EDGE_BRIGHTNESS_THRESHOLD),
     )
@@ -1004,6 +1018,92 @@ def start_classify():
 @app.route("/classify/stream")
 def stream_classify():
     return _sse_response(_classify_queue)
+
+
+@app.route("/semantic/start", methods=["POST"])
+def start_semantic():
+    global _semantic_processing
+
+    if _semantic_processing:
+        return {"error": "语义标签任务正在进行中，请稍后再试"}, 400
+
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    category = data.get("category", "").strip() or SEMANTIC_FRONTEND_CONFIG["default_category"]
+
+    try:
+        skip_existing = bool(data.get("skip_existing", True))
+        sleep_seconds = float(data.get("sleep_seconds", DEFAULT_SEMANTIC_SLEEP_SECONDS))
+        max_retries = int(data.get("max_retries", DEFAULT_SEMANTIC_MAX_RETRIES))
+    except (TypeError, ValueError):
+        return {"error": "请求间隔和重试次数必须是合法数字"}, 400
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+
+    _drain(_semantic_queue)
+    threading.Thread(
+        target=_run_semantic,
+        args=(input_dir, category, skip_existing, sleep_seconds, max_retries),
+        daemon=True,
+    ).start()
+    return {"status": "started"}
+
+
+@app.route("/semantic/stream")
+def stream_semantic():
+    return _sse_response(_semantic_queue)
+
+
+@app.route("/semantic/load", methods=["POST"])
+def load_semantic():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    category = data.get("category", "").strip() or SEMANTIC_FRONTEND_CONFIG["default_category"]
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+
+    try:
+        payload = load_semantic_review_data(input_dir=input_dir, category=category)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/semantic/save", methods=["POST"])
+def save_semantic():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    category = data.get("category", "").strip() or SEMANTIC_FRONTEND_CONFIG["default_category"]
+    items = data.get("items", [])
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+
+    try:
+        payload = save_semantic_review_items(
+            input_dir=input_dir,
+            category=category,
+            items=items,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/semantic/image")
+def semantic_image():
+    raw_path = request.args.get("path", "").strip()
+    if not raw_path:
+        abort(404)
+
+    path = Path(raw_path).expanduser().resolve()
+    if not path.exists() or not path.is_file():
+        abort(404)
+    if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+        abort(404)
+    return send_file(path)
 
 
 @app.route("/catalog/start", methods=["POST"])
@@ -1265,6 +1365,35 @@ def _run_catalog(
         _catalog_queue.put({"type": "error", "message": str(exc)})
     finally:
         _catalog_processing = False
+
+
+def _run_semantic(
+    input_dir: str,
+    category: str,
+    skip_existing: bool,
+    sleep_seconds: float,
+    max_retries: int,
+) -> None:
+    global _semantic_processing
+
+    _semantic_processing = True
+    try:
+        def _emit(payload: dict) -> None:
+            _semantic_queue.put(payload)
+
+        summary = build_semantic_tags(
+            input_dir=input_dir,
+            category=category,
+            skip_existing=skip_existing,
+            sleep_seconds=sleep_seconds,
+            max_retries=max_retries,
+            progress_callback=_emit,
+        )
+        _semantic_queue.put({"type": "done", **summary})
+    except Exception as exc:
+        _semantic_queue.put({"type": "error", "message": str(exc)})
+    finally:
+        _semantic_processing = False
 
 
 # ──────────────────────────────────────────────────────────────────────────────

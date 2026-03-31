@@ -1,6 +1,7 @@
 flask
 huggingface_hub
 numpy
+openai
 pillow
 scikit-image
 torch
