@@ -17,7 +17,28 @@ from asset_catalog_grid import KNOWN_CATEGORY_SUFFIXES, normalize_catalog_type
 ProgressCallback = Callable[[dict], None]
 
 SEMANTIC_CATEGORY = "sofa"
-SEMANTIC_MODEL = "qwen3.5-plus"
+DEFAULT_SEMANTIC_MODEL = "qwen3.5-plus"
+SUPPORTED_SEMANTIC_MODELS = [
+    "qwen3.5-plus",
+    "qwen3.5-flash",
+    "qwen3-vl-plus",
+    "qwen3-vl-flash",
+    "qwen-vl-max",
+    "qwen-vl-plus",
+    "qwen3.5-plus-2026-02-15",
+    "qwen3.5-flash-2026-02-23",
+]
+SUPPORTED_SEMANTIC_MODEL_SET = set(SUPPORTED_SEMANTIC_MODELS)
+SEMANTIC_MODEL_LABELS = {
+    "qwen3.5-plus": "Qwen3.5 Plus",
+    "qwen3.5-flash": "Qwen3.5 Flash",
+    "qwen3-vl-plus": "Qwen3-VL Plus",
+    "qwen3-vl-flash": "Qwen3-VL Flash",
+    "qwen-vl-max": "Qwen-VL Max",
+    "qwen-vl-plus": "Qwen-VL Plus",
+    "qwen3.5-plus-2026-02-15": "Qwen3.5 Plus 2026-02-15",
+    "qwen3.5-flash-2026-02-23": "Qwen3.5 Flash 2026-02-23",
+}
 SEMANTIC_PROMPT_VERSION = "semantic_multicategory_v2"
 LEGACY_SOFA_PROMPT_VERSION = "sofa_semantic_v1"
 SEMANTIC_INDEX_FILE = "semantic_tags.jsonl"
@@ -165,6 +186,9 @@ SEMANTIC_FRONTEND_CONFIG = {
     "shared_enums": SEMANTIC_SHARED_ENUMS,
     "enums": SEMANTIC_SHARED_ENUMS,
     "default_category": SEMANTIC_CATEGORY,
+    "model_options": list(SUPPORTED_SEMANTIC_MODELS),
+    "model_labels": dict(SEMANTIC_MODEL_LABELS),
+    "default_model": DEFAULT_SEMANTIC_MODEL,
     "default_sleep_seconds": DEFAULT_SLEEP_SECONDS,
     "default_max_retries": DEFAULT_MAX_RETRIES,
 }
@@ -173,6 +197,7 @@ SEMANTIC_FRONTEND_CONFIG = {
 def build_semantic_tags(
     input_dir: str | Path,
     category: str = SEMANTIC_CATEGORY,
+    model: str = DEFAULT_SEMANTIC_MODEL,
     skip_existing: bool = True,
     sleep_seconds: float = DEFAULT_SLEEP_SECONDS,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -180,6 +205,7 @@ def build_semantic_tags(
 ) -> dict:
     input_root = Path(input_dir).expanduser().resolve()
     category = _normalize_target_category(category)
+    model = normalize_semantic_model(model)
     sleep_seconds = _coerce_sleep_seconds(sleep_seconds)
     max_retries = _coerce_max_retries(max_retries)
 
@@ -196,6 +222,7 @@ def build_semantic_tags(
         "type": "start",
         "input_dir": str(input_root),
         "category": category,
+        "model": model,
         "total": len(images),
         "skip_existing": skip_existing,
         "sleep_seconds": sleep_seconds,
@@ -237,6 +264,7 @@ def build_semantic_tags(
                 image_path=image_path,
                 input_root=input_root,
                 category=category,
+                model=model,
                 sleep_seconds=sleep_seconds,
                 max_retries=max_retries,
             )
@@ -275,6 +303,7 @@ def build_semantic_tags(
     return {
         "input_dir": str(input_root),
         "category": category,
+        "model": model,
         "total": len(images),
         "stats": {
             **stats,
@@ -439,6 +468,7 @@ def _tag_single_image(
     image_path: Path,
     input_root: Path,
     category: str,
+    model: str,
     sleep_seconds: float,
     max_retries: int,
 ) -> dict:
@@ -455,12 +485,13 @@ def _tag_single_image(
             time.sleep(sleep_seconds)
 
         try:
-            raw_response = _call_qwen_vlm(data_url, prompt)
+            raw_response = _call_qwen_vlm(data_url, prompt, model=model)
             payload = _parse_json_object(raw_response)
             return _validate_semantic_record(
                 payload,
                 image_path=image_path,
                 input_root=input_root,
+                vlm_model=model,
                 refresh_updated_at=True,
             )
         except Exception as exc:
@@ -472,6 +503,7 @@ def _tag_single_image(
 def _call_qwen_vlm(
     image_data_url: str,
     prompt: str,
+    model: str,
 ) -> str:
     try:
         from openai import OpenAI
@@ -487,7 +519,7 @@ def _call_qwen_vlm(
         base_url=os.getenv("DASHSCOPE_BASE_URL", DEFAULT_BASE_URL),
     )
     response = client.chat.completions.create(
-        model=SEMANTIC_MODEL,
+        model=normalize_semantic_model(model),
         messages=[
             {
                 "role": "user",
@@ -632,7 +664,7 @@ def _build_review_draft(
         },
         **metadata,
         "prompt_version": str(payload.get("prompt_version") or SEMANTIC_PROMPT_VERSION),
-        "vlm_model": str(payload.get("vlm_model") or SEMANTIC_MODEL),
+        "vlm_model": str(payload.get("vlm_model") or DEFAULT_SEMANTIC_MODEL),
         "updated_at": str(payload.get("updated_at") or ""),
     }
 
@@ -706,7 +738,7 @@ def _validate_semantic_record(
         },
         **metadata,
         "prompt_version": str(prompt_version or SEMANTIC_PROMPT_VERSION),
-        "vlm_model": str(vlm_model or raw.get("vlm_model") or SEMANTIC_MODEL),
+        "vlm_model": str(vlm_model or raw.get("vlm_model") or DEFAULT_SEMANTIC_MODEL),
         "updated_at": _now_iso() if refresh_updated_at else str(raw.get("updated_at") or _now_iso()),
     }
 
@@ -1014,6 +1046,16 @@ def _normalize_target_category(category: Any) -> str:
     if normalized not in SUPPORTED_SEMANTIC_CATEGORY_SET:
         supported = ", ".join(SUPPORTED_SEMANTIC_CATEGORIES)
         raise ValueError(f"当前仅支持以下语义标签品类：{supported}")
+    return normalized
+
+
+def normalize_semantic_model(model: Any) -> str:
+    normalized = str(model or "").strip()
+    if not normalized:
+        return DEFAULT_SEMANTIC_MODEL
+    if normalized not in SUPPORTED_SEMANTIC_MODEL_SET:
+        supported = ", ".join(SUPPORTED_SEMANTIC_MODELS)
+        raise ValueError(f"当前仅支持以下视觉模型：{supported}")
     return normalized
 
 

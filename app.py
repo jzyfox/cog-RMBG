@@ -31,11 +31,13 @@ from semantic_bundle_builder import (
     seed_bundle_candidates,
 )
 from semantic_tagger import (
+    DEFAULT_SEMANTIC_MODEL,
     DEFAULT_MAX_RETRIES as DEFAULT_SEMANTIC_MAX_RETRIES,
     DEFAULT_SLEEP_SECONDS as DEFAULT_SEMANTIC_SLEEP_SECONDS,
     SEMANTIC_FRONTEND_CONFIG,
     build_semantic_tags,
     load_semantic_review_data,
+    normalize_semantic_model,
     save_semantic_review_items,
 )
 
@@ -1050,13 +1052,15 @@ def start_semantic():
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
     category = data.get("category", "").strip() or SEMANTIC_FRONTEND_CONFIG["default_category"]
+    model = data.get("model", "").strip() or DEFAULT_SEMANTIC_MODEL
 
     try:
+        model = normalize_semantic_model(model)
         skip_existing = bool(data.get("skip_existing", True))
         sleep_seconds = float(data.get("sleep_seconds", DEFAULT_SEMANTIC_SLEEP_SECONDS))
         max_retries = int(data.get("max_retries", DEFAULT_SEMANTIC_MAX_RETRIES))
     except (TypeError, ValueError):
-        return {"error": "请求间隔和重试次数必须是合法数字"}, 400
+        return {"error": "视觉模型、请求间隔和重试次数必须是合法值"}, 400
 
     if not input_dir:
         return {"error": "请填写输入目录"}, 400
@@ -1064,7 +1068,7 @@ def start_semantic():
     _drain(_semantic_queue)
     threading.Thread(
         target=_run_semantic,
-        args=(input_dir, category, skip_existing, sleep_seconds, max_retries),
+        args=(input_dir, category, model, skip_existing, sleep_seconds, max_retries),
         daemon=True,
     ).start()
     return {"status": "started"}
@@ -1550,6 +1554,7 @@ def _run_catalog(
 def _run_semantic(
     input_dir: str,
     category: str,
+    model: str,
     skip_existing: bool,
     sleep_seconds: float,
     max_retries: int,
@@ -1564,6 +1569,7 @@ def _run_semantic(
         summary = build_semantic_tags(
             input_dir=input_dir,
             category=category,
+            model=model,
             skip_existing=skip_existing,
             sleep_seconds=sleep_seconds,
             max_retries=max_retries,

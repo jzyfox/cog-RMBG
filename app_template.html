@@ -212,10 +212,14 @@
         <label class="text-sm text-gray-300">输入文件夹 <span class="text-gray-600">（递归扫描分类后的透明 PNG）</span></label>
         <input id="sem-input-dir" type="text" placeholder="例如：J:/classified_assets" />
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
         <div class="flex flex-col gap-1.5">
           <label class="text-sm text-gray-300">目标品类</label>
           <select id="sem-category"></select>
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">视觉模型</label>
+          <select id="sem-model"></select>
         </div>
         <div class="flex flex-col gap-1.5">
           <label class="text-sm text-gray-300">重试次数</label>
@@ -631,6 +635,7 @@ const catalogEditorState = {
 const semanticState = {
   inputDir: '',
   category: DEFAULT_SEMANTIC_CONFIG.default_category || 'sofa',
+  model: DEFAULT_SEMANTIC_CONFIG.default_model || 'qwen3.5-plus',
   loadedCategory: null,
   items: [],
   selectedImagePath: null,
@@ -1193,7 +1198,7 @@ function normalizeSemanticItem(item = {}) {
   };
 }
 
-function populateSemanticSelect(id, options, allowEmpty = false, emptyLabel = '请选择') {
+function legacyPopulateSemanticSelect__unused(id, options, allowEmpty = false, emptyLabel = '请选择') {
   const select = document.getElementById(id);
   select.innerHTML = '';
   if (allowEmpty) {
@@ -1210,8 +1215,9 @@ function populateSemanticSelect(id, options, allowEmpty = false, emptyLabel = '�
   });
 }
 
-function initializeSemanticUI() {
+function legacyInitializeSemanticUI__unused() {
   const categorySelect = document.getElementById('sem-category');
+  const modelSelect = document.getElementById('sem-model');
   categorySelect.innerHTML = '';
   (DEFAULT_SEMANTIC_CONFIG.category_options || ['sofa']).forEach(value => {
     const option = document.createElement('option');
@@ -1455,6 +1461,7 @@ function semanticLog(text, cls) { addLog('sem-log', text, cls); }
 function startSemanticTagging() {
   const inputDir = document.getElementById('sem-input-dir').value.trim();
   const category = document.getElementById('sem-category').value;
+  const model = persistSemanticModel(document.getElementById('sem-model').value);
   const skipExisting = document.getElementById('sem-skip-existing').checked;
   const maxRetries = parseInt(document.getElementById('sem-max-retries').value, 10);
   const sleepSeconds = parseFloat(document.getElementById('sem-sleep-seconds').value);
@@ -1474,6 +1481,7 @@ function startSemanticTagging() {
 
   semanticState.inputDir = inputDir;
   semanticState.category = category;
+  semanticState.model = model;
   document.getElementById('sem-progress-card').classList.remove('hidden');
   document.getElementById('sem-log').innerHTML = '';
   document.getElementById('sem-result-path').textContent = '';
@@ -1489,6 +1497,7 @@ function startSemanticTagging() {
     body: JSON.stringify({
       input_dir: inputDir,
       category,
+      model,
       skip_existing: skipExisting,
       sleep_seconds: sleepSeconds,
       max_retries: maxRetries,
@@ -1515,6 +1524,7 @@ function listenSemantic() {
     if (msg.type === 'start') {
       document.getElementById('sem-result-path').textContent = `输入目录：${msg.input_dir}`;
       semanticLog(`发现 ${msg.total} 张 ${msg.category} 图片，开始批量打标...`, 'text-gray-400');
+      semanticLog(`当前模型：${getSemanticModelLabel(msg.model || semanticState.model)}`, 'text-gray-500');
       semanticLog(`跳过已有：${msg.skip_existing ? '是' : '否'} · 重试：${msg.max_retries} · 间隔：${msg.sleep_seconds}s`, 'text-gray-500');
       setSemanticProgress(0, msg.total);
     }
@@ -1671,6 +1681,45 @@ function getDefaultSemanticCategory() {
   return DEFAULT_SEMANTIC_CONFIG.default_category || (DEFAULT_SEMANTIC_CONFIG.category_options || [])[0] || 'sofa';
 }
 
+function getDefaultSemanticModel() {
+  return DEFAULT_SEMANTIC_CONFIG.default_model || (DEFAULT_SEMANTIC_CONFIG.model_options || [])[0] || 'qwen3.5-plus';
+}
+
+function getSemanticModelOptions() {
+  const options = DEFAULT_SEMANTIC_CONFIG.model_options || [];
+  return Array.isArray(options) && options.length ? options : [getDefaultSemanticModel()];
+}
+
+function isSemanticModelSupported(model) {
+  return getSemanticModelOptions().includes(String(model || '').trim());
+}
+
+function getSemanticModelLabel(model) {
+  const normalized = String(model || '').trim();
+  const labels = DEFAULT_SEMANTIC_CONFIG.model_labels || {};
+  return labels[normalized] || normalized || getDefaultSemanticModel();
+}
+
+function readStoredSemanticModel() {
+  try {
+    const stored = window.localStorage.getItem('semantic_selected_model');
+    return isSemanticModelSupported(stored) ? stored : getDefaultSemanticModel();
+  } catch (error) {
+    return getDefaultSemanticModel();
+  }
+}
+
+function persistSemanticModel(model) {
+  const normalized = isSemanticModelSupported(model) ? String(model).trim() : getDefaultSemanticModel();
+  semanticState.model = normalized;
+  try {
+    window.localStorage.setItem('semantic_selected_model', normalized);
+  } catch (error) {
+    // Ignore storage failures and keep the in-memory selection.
+  }
+  return normalized;
+}
+
 function getSemanticSharedEnums() {
   return DEFAULT_SEMANTIC_CONFIG.shared_enums || DEFAULT_SEMANTIC_CONFIG.enums || {};
 }
@@ -1818,6 +1867,7 @@ function normalizeSemanticItem(item = {}) {
 
 function populateSemanticSelect(id, options, allowEmpty = false, emptyLabel = '请选择') {
   const select = document.getElementById(id);
+  if (!select) return null;
   select.innerHTML = '';
   if (allowEmpty) {
     const option = document.createElement('option');
@@ -1831,6 +1881,7 @@ function populateSemanticSelect(id, options, allowEmpty = false, emptyLabel = '�
     option.textContent = value;
     select.appendChild(option);
   });
+  return select;
 }
 
 function resetSemanticLoadedItems() {
@@ -1842,6 +1893,9 @@ function resetSemanticLoadedItems() {
 
 function initializeSemanticUI() {
   const categorySelect = document.getElementById('sem-category');
+  const modelSelect = document.getElementById('sem-model');
+  if (!categorySelect) return;
+
   categorySelect.innerHTML = '';
   getSemanticCategoryOptions().forEach(value => {
     const option = document.createElement('option');
@@ -1851,6 +1905,18 @@ function initializeSemanticUI() {
   });
   categorySelect.value = semanticState.category;
 
+  semanticState.model = readStoredSemanticModel();
+  if (modelSelect) {
+    modelSelect.innerHTML = '';
+    getSemanticModelOptions().forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = getSemanticModelLabel(value);
+      modelSelect.appendChild(option);
+    });
+    modelSelect.value = semanticState.model;
+  }
+
   const sharedEnums = getSemanticSharedEnums();
   populateSemanticSelect('sem-primary-style', sharedEnums.styles || [], true);
   populateSemanticSelect('sem-secondary-style', sharedEnums.styles || [], true, '无');
@@ -1858,7 +1924,7 @@ function initializeSemanticUI() {
   populateSemanticSelect('sem-color-brightness', sharedEnums.color_brightness || [], true);
   populateSemanticSelect('sem-main-material', sharedEnums.materials || [], true);
 
-  document.getElementById('sem-category').addEventListener('change', event => {
+  categorySelect.addEventListener('change', event => {
     const nextCategory = event.target.value;
     const categoryChanged = semanticState.loadedCategory && semanticState.loadedCategory !== nextCategory;
     const hasDirtyItems = semanticState.items.some(item => item.status === 'dirty');
@@ -1879,11 +1945,24 @@ function initializeSemanticUI() {
     renderSemanticReviewPanel();
   });
 
-  document.getElementById('sem-primary-style').addEventListener('change', event => updateSelectedSemanticField('primary_style', event.target.value));
-  document.getElementById('sem-secondary-style').addEventListener('change', event => updateSelectedSemanticField('secondary_style', event.target.value));
-  document.getElementById('sem-color-family').addEventListener('change', event => updateSelectedSemanticField('color_family', event.target.value));
-  document.getElementById('sem-color-brightness').addEventListener('change', event => updateSelectedSemanticField('color_brightness', event.target.value));
-  document.getElementById('sem-main-material').addEventListener('change', event => updateSelectedSemanticField('main_material', event.target.value));
+  const bindSemanticSelectChange = (id, fieldName) => {
+    const element = document.getElementById(id);
+    if (!element) return;
+    element.addEventListener('change', event => updateSelectedSemanticField(fieldName, event.target.value));
+  };
+
+  bindSemanticSelectChange('sem-primary-style', 'primary_style');
+  bindSemanticSelectChange('sem-secondary-style', 'secondary_style');
+  bindSemanticSelectChange('sem-color-family', 'color_family');
+  bindSemanticSelectChange('sem-color-brightness', 'color_brightness');
+  bindSemanticSelectChange('sem-main-material', 'main_material');
+
+  if (modelSelect) {
+    modelSelect.addEventListener('change', event => {
+      const normalizedModel = persistSemanticModel(event.target.value);
+      modelSelect.value = normalizedModel;
+    });
+  }
 }
 
 function getSelectedSemanticItem() {
@@ -2173,6 +2252,7 @@ function setSemanticProcessing(active) {
   const reloadBtn = document.getElementById('sem-reload-btn');
   const inputDirInput = document.getElementById('sem-input-dir');
   const categorySelect = document.getElementById('sem-category');
+  const modelSelect = document.getElementById('sem-model');
   const retryInput = document.getElementById('sem-max-retries');
   const sleepInput = document.getElementById('sem-sleep-seconds');
   const skipCheckbox = document.getElementById('sem-skip-existing');
@@ -2184,6 +2264,7 @@ function setSemanticProcessing(active) {
   reloadBtn.disabled = active;
   inputDirInput.disabled = active;
   categorySelect.disabled = active;
+  if (modelSelect) modelSelect.disabled = active;
   retryInput.disabled = active;
   sleepInput.disabled = active;
   skipCheckbox.disabled = active;
@@ -2200,6 +2281,8 @@ function semanticLog(text, cls) {
 function startSemanticTagging() {
   const inputDir = document.getElementById('sem-input-dir').value.trim();
   const category = document.getElementById('sem-category').value;
+  const modelSelect = document.getElementById('sem-model');
+  const model = persistSemanticModel(modelSelect ? modelSelect.value : semanticState.model);
   const skipExisting = document.getElementById('sem-skip-existing').checked;
   const maxRetries = parseInt(document.getElementById('sem-max-retries').value, 10);
   const sleepSeconds = parseFloat(document.getElementById('sem-sleep-seconds').value);
@@ -2219,6 +2302,7 @@ function startSemanticTagging() {
 
   semanticState.inputDir = inputDir;
   semanticState.category = category;
+  semanticState.model = model;
   document.getElementById('sem-progress-card').classList.remove('hidden');
   document.getElementById('sem-log').innerHTML = '';
   document.getElementById('sem-result-path').textContent = '';
@@ -2234,6 +2318,7 @@ function startSemanticTagging() {
     body: JSON.stringify({
       input_dir: inputDir,
       category,
+      model,
       skip_existing: skipExisting,
       sleep_seconds: sleepSeconds,
       max_retries: maxRetries,
@@ -2260,6 +2345,7 @@ function listenSemantic() {
     if (msg.type === 'start') {
       document.getElementById('sem-result-path').textContent = `输入目录：${msg.input_dir}`;
       semanticLog(`发现 ${msg.total} 张 ${getSemanticCategoryLabel(msg.category)} 图片，开始批量打标...`, 'text-gray-400');
+      semanticLog(`当前模型：${getSemanticModelLabel(msg.model || semanticState.model)}`, 'text-gray-500');
       semanticLog(`跳过已有：${msg.skip_existing ? '是' : '否'} · 重试：${msg.max_retries} · 间隔：${msg.sleep_seconds}s`, 'text-gray-500');
       setSemanticProgress(0, msg.total);
     }
