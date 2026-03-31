@@ -5,6 +5,7 @@ BRIA RMBG + CLIP 分类 - 本地 Web 界面
 """
 
 import json
+import io
 import queue
 import shutil
 import threading
@@ -16,6 +17,19 @@ from asset_catalog_grid import DEFAULT_CATALOG_LAYOUT, normalize_layout_config
 from flask import Flask, Response, abort, render_template_string, request, send_file
 from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_WIDTH
 from PIL import Image
+from semantic_bundle_builder import (
+    BUNDLE_FRONTEND_CONFIG,
+    DEFAULT_BUNDLE_TARGET_COUNT,
+    DEFAULT_SEED_CANDIDATE_COUNT,
+    build_bundle_candidates,
+    load_bundle_pool,
+    load_bundle_review_data,
+    regenerate_bundle_candidate,
+    render_bundle_outputs,
+    render_bundle_preview,
+    save_bundle_review,
+    seed_bundle_candidates,
+)
 from semantic_tagger import (
     DEFAULT_MAX_RETRIES as DEFAULT_SEMANTIC_MAX_RETRIES,
     DEFAULT_SLEEP_SECONDS as DEFAULT_SEMANTIC_SLEEP_SECONDS,
@@ -81,6 +95,9 @@ _catalog_processing = False
 
 _semantic_queue: queue.Queue = queue.Queue()
 _semantic_processing = False
+
+_bundle_queue: queue.Queue = queue.Queue()
+_bundle_processing = False
 
 # ── 默认分类 ──────────────────────────────────────────────────────────────────
 DEFAULT_CATEGORIES = [
@@ -888,6 +905,9 @@ def index():
         default_categories=_load_categories(),
         default_catalog_layout=_load_catalog_layout(),
         default_semantic_config=SEMANTIC_FRONTEND_CONFIG,
+        default_bundle_config=BUNDLE_FRONTEND_CONFIG,
+        default_bundle_target_count=DEFAULT_BUNDLE_TARGET_COUNT,
+        default_seed_candidate_count=DEFAULT_SEED_CANDIDATE_COUNT,
         default_semantic_sleep_seconds=DEFAULT_SEMANTIC_SLEEP_SECONDS,
         default_semantic_max_retries=DEFAULT_SEMANTIC_MAX_RETRIES,
         default_clean_edge_width=DEFAULT_EDGE_WIDTH,
@@ -1104,6 +1124,166 @@ def semantic_image():
     if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
         abort(404)
     return send_file(path)
+
+
+@app.route("/bundle/start", methods=["POST"])
+def start_bundle():
+    global _bundle_processing
+
+    if _bundle_processing:
+        return {"error": "自动组套任务正在进行中，请稍后再试"}, 400
+
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+
+    try:
+        target_count = int(data.get("target_count", DEFAULT_BUNDLE_TARGET_COUNT))
+    except (TypeError, ValueError):
+        return {"error": "目标数量必须是合法整数"}, 400
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+
+    _drain(_bundle_queue)
+    threading.Thread(
+        target=_run_bundle,
+        args=(input_dir, target_count),
+        daemon=True,
+    ).start()
+    return {"status": "started"}
+
+
+@app.route("/bundle/stream")
+def stream_bundle():
+    return _sse_response(_bundle_queue)
+
+
+@app.route("/bundle/pool", methods=["POST"])
+def bundle_pool():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    category = data.get("category")
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+
+    try:
+        payload = load_bundle_pool(input_dir=input_dir, category=category)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/bundle/seed", methods=["POST"])
+def bundle_seed():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    seed_image_path = data.get("seed_image_path", "").strip()
+
+    try:
+        candidate_count = int(data.get("candidate_count", DEFAULT_SEED_CANDIDATE_COUNT))
+    except (TypeError, ValueError):
+        return {"error": "候选数量必须是合法整数"}, 400
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+    if not seed_image_path:
+        return {"error": "请先选择种子图片"}, 400
+
+    try:
+        payload = seed_bundle_candidates(
+            input_dir=input_dir,
+            seed_image_path=seed_image_path,
+            candidate_count=candidate_count,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/bundle/load", methods=["POST"])
+def bundle_load():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+
+    try:
+        payload = load_bundle_review_data(input_dir=input_dir)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/bundle/review", methods=["POST"])
+def bundle_review():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    action = str(data.get("action", "")).strip().lower()
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+
+    try:
+        if action == "regenerate":
+            bundle_id = str(data.get("bundle_id", "")).strip()
+            if not bundle_id:
+                return {"error": "缺少 bundle_id"}, 400
+            payload = regenerate_bundle_candidate(input_dir=input_dir, bundle_id=bundle_id)
+        else:
+            payload = save_bundle_review(
+                input_dir=input_dir,
+                bundles=data.get("bundles", []),
+            )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/bundle/preview", methods=["POST"])
+def bundle_preview():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    bundle_id = str(data.get("bundle_id", "")).strip()
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+    if not bundle_id:
+        return {"error": "缺少 bundle_id"}, 400
+
+    try:
+        payload = render_bundle_preview(
+            input_dir=input_dir,
+            bundle_id=bundle_id,
+            layout=_load_catalog_layout(),
+        )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+
+    return send_file(io.BytesIO(payload), mimetype="image/png", download_name=f"{bundle_id}.png")
+
+
+@app.route("/bundle/render", methods=["POST"])
+def bundle_render():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    output_dir = data.get("output_dir", "").strip()
+    bundle_ids = data.get("bundle_ids")
+
+    if not input_dir or not output_dir:
+        return {"error": "请填写输入目录和输出目录"}, 400
+
+    try:
+        payload = render_bundle_outputs(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            bundle_ids=bundle_ids if isinstance(bundle_ids, list) else None,
+            layout=_load_catalog_layout(),
+        )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
 
 
 @app.route("/catalog/start", methods=["POST"])
@@ -1399,6 +1579,29 @@ def _run_semantic(
 # ──────────────────────────────────────────────────────────────────────────────
 # 工具函数
 # ──────────────────────────────────────────────────────────────────────────────
+def _run_bundle(
+    input_dir: str,
+    target_count: int,
+) -> None:
+    global _bundle_processing
+
+    _bundle_processing = True
+    try:
+        def _emit(payload: dict) -> None:
+            _bundle_queue.put(payload)
+
+        summary = build_bundle_candidates(
+            input_dir=input_dir,
+            target_count=target_count,
+            progress_callback=_emit,
+        )
+        _bundle_queue.put({"type": "done", **summary})
+    except Exception as exc:
+        _bundle_queue.put({"type": "error", "message": str(exc)})
+    finally:
+        _bundle_processing = False
+
+
 def _to_white_rgb(image: Image.Image) -> Image.Image:
     rgba = image.convert("RGBA")
     background = Image.new("RGB", rgba.size, (255, 255, 255))

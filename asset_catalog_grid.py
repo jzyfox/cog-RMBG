@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import io
 import os
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -280,6 +281,45 @@ def build_catalog_grid(
     )
 
 
+def build_catalog_grid_from_manifest(
+    items: list[dict],
+    output_path: str | Path,
+    layout: dict | None = None,
+    background_color: str = DEFAULT_BACKGROUND,
+    title: str | None = None,
+) -> dict:
+    output_path = Path(output_path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas, summary = _render_manifest_canvas(
+        items=items,
+        layout=layout,
+        background_color=background_color,
+        title=title,
+    )
+    canvas.save(output_path)
+    return {
+        **summary,
+        "output_path": str(output_path),
+    }
+
+
+def render_catalog_manifest_preview(
+    items: list[dict],
+    layout: dict | None = None,
+    background_color: str = DEFAULT_BACKGROUND,
+    title: str | None = None,
+) -> bytes:
+    canvas, _ = _render_manifest_canvas(
+        items=items,
+        layout=layout,
+        background_color=background_color,
+        title=title,
+    )
+    buffer = io.BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def normalize_layout_config(layout: dict | None) -> dict:
     source = copy.deepcopy(DEFAULT_CATALOG_LAYOUT if layout is None else layout)
     if not isinstance(source, dict):
@@ -370,6 +410,33 @@ def normalize_catalog_type(type_name: str) -> str:
     return normalized
 
 
+def _render_manifest_canvas(
+    items: list[dict],
+    layout: dict | None,
+    background_color: str,
+    title: str | None,
+) -> tuple[Image.Image, dict]:
+    normalized_layout = normalize_layout_config(layout)
+    layout_boxes = _build_layout_boxes(normalized_layout["boxes"])
+    candidate_items = _prepare_manifest_items(items)
+    assignments, assignment_summary = _assign_items(layout_boxes, candidate_items)
+    missing_types = [box.type for box in layout_boxes if box.type not in assignments]
+    if missing_types:
+        raise ValueError(f"Manifest is missing required categories: {', '.join(missing_types)}")
+
+    canvas, placements, base_summary = _compose_grid_canvas(
+        title_text=title or "bundle_preview",
+        layout=normalized_layout,
+        layout_boxes=layout_boxes,
+        assignments=assignments,
+        background_color=background_color,
+    )
+    base_summary.update(assignment_summary)
+    base_summary["items_placed"] = len(placements)
+    base_summary["box_count"] = len(layout_boxes)
+    return canvas, base_summary
+
+
 def _render_package_grid(
     package_name: str,
     layout: dict,
@@ -378,8 +445,33 @@ def _render_package_grid(
     output_dir: Path,
     background_color: str,
 ) -> dict:
+    canvas, placements, base_summary = _compose_grid_canvas(
+        title_text=f"=== {package_name} ===",
+        layout=layout,
+        layout_boxes=layout_boxes,
+        assignments=assignments,
+        background_color=background_color,
+    )
+    output_path = output_dir / f"{package_name}_grid.png"
+    canvas.save(output_path)
+
+    return {
+        "package": package_name,
+        "output_path": str(output_path),
+        **base_summary,
+        "items_placed": len(placements),
+        "box_count": len(layout_boxes),
+    }
+
+
+def _compose_grid_canvas(
+    title_text: str,
+    layout: dict,
+    layout_boxes: list[LayoutBox],
+    assignments: dict[str, AssignedItem],
+    background_color: str,
+) -> tuple[Image.Image, list[ItemPlacement], dict]:
     title_font = _load_font(max(24, layout["canvas_width"] // 24))
-    title_text = f"=== {package_name} ==="
     title_height = _measure_text_height(title_text, title_font)
     canvas_width = layout["canvas_width"] + CANVAS_PADDING * 2
     content_origin_x = CANVAS_PADDING
@@ -412,18 +504,11 @@ def _render_package_grid(
             resized = cropped.resize(placement.assignment.target_size, RESAMPLE)
             canvas.alpha_composite(resized, dest=(placement.x, placement.y))
 
-    output_path = output_dir / f"{package_name}_grid.png"
-    canvas.save(output_path)
-
-    return {
-        "package": package_name,
-        "output_path": str(output_path),
+    return canvas, placements, {
         "canvas_width": canvas_width,
         "canvas_height": canvas_height,
         "layout_canvas_width": layout["canvas_width"],
         "layout_canvas_height": layout["canvas_height"],
-        "items_placed": len(placements),
-        "box_count": len(layout_boxes),
     }
 
 
@@ -569,6 +654,40 @@ def _pop_candidate(
     if not queue:
         return None
     return queue.popleft()
+
+
+def _prepare_manifest_items(items: list[dict]) -> dict[str, list[PreparedItem]]:
+    if not isinstance(items, list) or not items:
+        raise ValueError("Manifest items cannot be empty")
+
+    candidate_items: dict[str, list[PreparedItem]] = defaultdict(list)
+    seen_paths: set[Path] = set()
+
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("Each manifest item must be an object")
+
+        category = normalize_catalog_type(item.get("category"))
+        image_path_value = item.get("image_path") or item.get("source_image_path")
+        if not image_path_value:
+            raise ValueError("Each manifest item must include image_path")
+
+        image_path = Path(str(image_path_value)).expanduser().resolve()
+        if image_path in seen_paths:
+            raise ValueError(f"Duplicate manifest image detected: {image_path.name}")
+        if not image_path.exists() or not image_path.is_file():
+            raise FileNotFoundError(f"Manifest image does not exist: {image_path}")
+        if image_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            raise ValueError(f"Manifest image must be PNG: {image_path.name}")
+
+        seen_paths.add(image_path)
+        candidate_items[category].append(_prepare_item(
+            image_path=image_path,
+            raw_category=category,
+            category=category,
+        ))
+
+    return candidate_items
 
 
 def _discover_package_files(input_dir: Path) -> list[tuple[str, list[Path]]]:
