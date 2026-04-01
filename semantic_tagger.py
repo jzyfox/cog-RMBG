@@ -12,7 +12,12 @@ from typing import Any
 
 from PIL import Image
 
-from asset_catalog_grid import KNOWN_CATEGORY_SUFFIXES, normalize_catalog_type
+from asset_catalog_grid import (
+    build_classified_catalog_name,
+    normalize_catalog_type,
+    parse_catalog_category_from_stem,
+    strip_catalog_category_suffix,
+)
 
 ProgressCallback = Callable[[dict], None]
 
@@ -43,6 +48,7 @@ SEMANTIC_PROMPT_VERSION = "semantic_multicategory_v2"
 LEGACY_SOFA_PROMPT_VERSION = "sofa_semantic_v1"
 SEMANTIC_INDEX_FILE = "semantic_tags.jsonl"
 SEMANTIC_ERROR_FILE = "semantic_tag_errors.jsonl"
+UNCERTAIN_CATEGORY = "uncertain"
 DEFAULT_SLEEP_SECONDS = 0.5
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_MAX_IMAGE_SIDE = 1600
@@ -437,6 +443,69 @@ def save_semantic_review_items(
         "status": "saved",
         "count": len(saved_items),
         "items": saved_items,
+        "stats": index_stats,
+    }
+
+
+def reassign_semantic_review_item(
+    input_dir: str | Path,
+    image_path: str | Path,
+    target_category: str,
+    allowed_categories: list[str] | tuple[str, ...] | set[str],
+) -> dict[str, Any]:
+    input_root = Path(input_dir).expanduser().resolve()
+    if not input_root.exists():
+        raise FileNotFoundError(f"输入目录不存在：{input_root}")
+    if not input_root.is_dir():
+        raise NotADirectoryError(f"输入路径不是文件夹：{input_root}")
+
+    source_image_path = _resolve_existing_png_path(image_path, input_root)
+    previous_category = _get_image_category(source_image_path)
+    normalized_target_category = _normalize_reassign_target_category(target_category, allowed_categories)
+
+    if normalized_target_category == previous_category:
+        raise ValueError(f"当前图片已经是 {previous_category}，无需重复修改")
+
+    base_stem = strip_catalog_category_suffix(
+        source_image_path.stem,
+        category_names=allowed_categories,
+        extra_suffixes=[UNCERTAIN_CATEGORY],
+    )
+    target_image_path = source_image_path.with_name(
+        build_classified_catalog_name(base_stem, normalized_target_category, source_image_path.suffix),
+    )
+    target_sidecar_path = target_image_path.with_suffix(".json")
+
+    if target_image_path == source_image_path:
+        raise ValueError("目标图片路径与当前路径相同，无法执行分类修正")
+    if target_image_path.exists():
+        raise FileExistsError(f"目标图片已存在，无法覆盖：{target_image_path.name}")
+    if target_sidecar_path.exists():
+        raise FileExistsError(f"目标同名语义标签已存在，无法覆盖：{target_sidecar_path.name}")
+
+    source_sidecar_path = source_image_path.with_suffix(".json")
+    renamed = False
+    try:
+        source_image_path.rename(target_image_path)
+        renamed = True
+        if source_sidecar_path.exists():
+            source_sidecar_path.unlink()
+    except Exception:
+        if renamed and target_image_path.exists() and not source_image_path.exists():
+            try:
+                target_image_path.rename(source_image_path)
+            except Exception:
+                pass
+        raise
+
+    index_stats = rebuild_semantic_indices(input_root)
+    return {
+        "status": "reassigned",
+        "previous_category": previous_category,
+        "target_category": normalized_target_category,
+        "source_image_path": str(source_image_path),
+        "target_image_path": str(target_image_path),
+        "semantic_supported": normalized_target_category in SUPPORTED_SEMANTIC_CATEGORY_SET,
         "stats": index_stats,
     }
 
@@ -1001,6 +1070,56 @@ def _resolve_item_image_path(item: dict[str, Any], input_root: Path) -> Path:
     return image_path
 
 
+def _resolve_existing_png_path(path_value: str | Path, input_root: Path) -> Path:
+    image_path = Path(str(path_value or "")).expanduser()
+    if not image_path.is_absolute():
+        image_path = (input_root / image_path).resolve()
+    else:
+        image_path = image_path.resolve()
+
+    if input_root not in image_path.parents and image_path != input_root:
+        raise ValueError(f"图片路径不在输入目录内：{image_path}")
+    if not image_path.exists():
+        raise FileNotFoundError(f"图片不存在：{image_path}")
+    if not image_path.is_file():
+        raise ValueError(f"目标路径不是图片文件：{image_path}")
+    if image_path.suffix.lower() != ".png":
+        raise ValueError(f"只允许修正 PNG 图片：{image_path.name}")
+    return image_path
+
+
+def _normalize_reassign_target_category(
+    target_category: Any,
+    allowed_categories: list[str] | tuple[str, ...] | set[str],
+) -> str:
+    normalized_allowed: list[str] = []
+    seen: set[str] = set()
+    for value in allowed_categories:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            continue
+        if normalized != UNCERTAIN_CATEGORY:
+            normalized = normalize_catalog_type(normalized)
+        if not normalized or normalized == "default" or normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_allowed.append(normalized)
+
+    if not normalized_allowed:
+        raise ValueError("当前没有可用于分类修正的目标品类")
+
+    normalized_target = str(target_category or "").strip().lower()
+    if not normalized_target:
+        raise ValueError("请选择修正后的品类")
+    if normalized_target != UNCERTAIN_CATEGORY:
+        normalized_target = normalize_catalog_type(normalized_target)
+
+    if normalized_target not in seen:
+        allowed_display = ", ".join(normalized_allowed)
+        raise ValueError(f"目标品类不在当前图片分类配置中：{normalized_target}（允许值：{allowed_display}）")
+    return normalized_target
+
+
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -1074,13 +1193,7 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 
 
 def _parse_category_from_stem(stem: str) -> str:
-    normalized_stem = str(stem or "").strip().lower()
-    for suffix in KNOWN_CATEGORY_SUFFIXES:
-        if normalized_stem == suffix or normalized_stem.endswith(f"_{suffix}"):
-            return normalize_catalog_type(suffix)
-    if "_" not in normalized_stem:
-        return "default"
-    return normalize_catalog_type(normalized_stem.rsplit("_", 1)[-1])
+    return parse_catalog_category_from_stem(stem)
 
 
 def _normalize_target_category(category: Any) -> str:

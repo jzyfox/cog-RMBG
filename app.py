@@ -13,7 +13,15 @@ import webbrowser
 from copy import deepcopy
 from pathlib import Path
 
-from asset_catalog_grid import DEFAULT_CATALOG_LAYOUT, normalize_catalog_type, normalize_layout_config
+from asset_catalog_grid import (
+    CATALOG_GENERATION_MODES,
+    DEFAULT_CATALOG_LAYOUT,
+    build_classified_catalog_name,
+    normalize_catalog_type,
+    normalize_layout_config,
+    parse_catalog_category_from_stem,
+    strip_catalog_category_suffix,
+)
 from flask import Flask, Response, abort, render_template_string, request, send_file
 from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_WIDTH
 from PIL import Image
@@ -22,6 +30,7 @@ from semantic_bundle_builder import (
     DEFAULT_BUNDLE_TARGET_COUNT,
     DEFAULT_SEED_CANDIDATE_COUNT,
     build_bundle_candidates,
+    delete_bundle_candidate,
     load_bundle_pool,
     load_bundle_review_data,
     regenerate_bundle_candidate,
@@ -38,6 +47,7 @@ from semantic_tagger import (
     build_semantic_tags,
     load_semantic_review_data,
     normalize_semantic_model,
+    reassign_semantic_review_item,
     save_semantic_review_items,
 )
 
@@ -76,6 +86,82 @@ def _resolve_semantic_request_category(raw_category: str | None, semantic_config
     if matched_item and not bool(matched_item.get("supported")):
         raise ValueError(f"该品类暂未支持语义标签：{normalized}")
     return normalized
+
+
+def _get_classification_category_names(include_uncertain: bool = False) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in _load_categories():
+        raw_name = row.get("name") if isinstance(row, dict) else row
+        normalized = normalize_catalog_type(str(raw_name or "").strip().lower())
+        if not normalized or normalized == "default" or normalized in seen:
+            continue
+        seen.add(normalized)
+        names.append(normalized)
+    if include_uncertain and UNCERTAIN_CATEGORY not in seen:
+        names.append(UNCERTAIN_CATEGORY)
+    return names
+
+
+def _normalize_classification_review_category(raw_category: str | None) -> str:
+    allowed_categories = _get_classification_category_names(include_uncertain=True)
+    normalized = str(raw_category or "").strip().lower()
+    if not normalized:
+        raise ValueError("请选择要加载的当前分类")
+    if normalized != UNCERTAIN_CATEGORY:
+        normalized = normalize_catalog_type(normalized)
+    if normalized not in allowed_categories:
+        allowed_display = ", ".join(allowed_categories)
+        raise ValueError(f"当前分类不在已保存的分类配置中：{normalized}（允许值：{allowed_display}）")
+    return normalized
+
+
+def _get_classified_output_category(image_path: Path) -> str:
+    return parse_catalog_category_from_stem(image_path.stem)
+
+
+def load_classify_review_data(output_dir: str | Path, category: str) -> dict:
+    output_root = Path(output_dir).expanduser().resolve()
+    if not output_root.exists():
+        raise FileNotFoundError(f"输出目录不存在：{output_root}")
+    if not output_root.is_dir():
+        raise NotADirectoryError(f"输出路径不是文件夹：{output_root}")
+
+    normalized_category = _normalize_classification_review_category(category)
+    allowed_categories = _get_classification_category_names(include_uncertain=True)
+    counts = {name: 0 for name in allowed_categories}
+    items: list[dict] = []
+
+    for image_path in sorted(
+        path for path in output_root.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".png"
+    ):
+        current_category = _get_classified_output_category(image_path)
+        if current_category not in counts:
+            continue
+
+        counts[current_category] += 1
+        if current_category != normalized_category:
+            continue
+
+        items.append({
+            "file_name": image_path.name,
+            "image_path": str(image_path),
+            "relative_path": image_path.relative_to(output_root).as_posix(),
+            "current_category": current_category,
+            "has_semantic_sidecar": image_path.with_suffix(".json").exists(),
+        })
+
+    return {
+        "output_dir": str(output_root),
+        "category": normalized_category,
+        "items": items,
+        "stats": {
+            "counts": counts,
+            "loaded": len(items),
+            "total": sum(counts.values()),
+        },
+    }
 
 
 def _format_number(value: float) -> int | float:
@@ -917,7 +1003,8 @@ function addLog(areaId, text, cls) {
 
 # Runtime template lives in app_template.html. The legacy inline template is kept
 # above only to avoid a large in-place string deletion in a dirty worktree.
-HTML = (Path(__file__).parent / "app_template.html").read_text(encoding="utf-8")
+def _load_runtime_template() -> str:
+    return (Path(__file__).parent / "app_template.html").read_text(encoding="utf-8")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -928,7 +1015,7 @@ def index():
     categories = _load_categories()
     semantic_config = _get_semantic_frontend_config(categories)
     return render_template_string(
-        HTML,
+        _load_runtime_template(),
         default_categories=categories,
         default_catalog_layout=_load_catalog_layout(),
         default_semantic_config=semantic_config,
@@ -1077,6 +1164,48 @@ def stream_classify():
     return _sse_response(_classify_queue)
 
 
+@app.route("/classify/load", methods=["POST"])
+def load_classify():
+    data = request.json or {}
+    output_dir = data.get("output_dir", "").strip()
+
+    if not output_dir:
+        return {"error": "请填写输出目录"}, 400
+
+    try:
+        category = _normalize_classification_review_category(data.get("category", ""))
+        payload = load_classify_review_data(output_dir=output_dir, category=category)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/classify/reassign", methods=["POST"])
+def reassign_classify():
+    data = request.json or {}
+    output_dir = data.get("output_dir", "").strip()
+    image_path = data.get("image_path", "").strip()
+    target_category = data.get("target_category", "").strip()
+
+    if not output_dir:
+        return {"error": "请填写输出目录"}, 400
+    if not image_path:
+        return {"error": "请提供要修正的图片路径"}, 400
+    if not target_category:
+        return {"error": "请选择修正后的品类"}, 400
+
+    try:
+        payload = reassign_semantic_review_item(
+            input_dir=output_dir,
+            image_path=image_path,
+            target_category=target_category,
+            allowed_categories=_get_classification_category_names(include_uncertain=True),
+        )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
 @app.route("/semantic/start", methods=["POST"])
 def start_semantic():
     global _semantic_processing
@@ -1146,6 +1275,32 @@ def save_semantic():
             input_dir=input_dir,
             category=category,
             items=items,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/semantic/reassign", methods=["POST"])
+def reassign_semantic():
+    data = request.json or {}
+    input_dir = data.get("input_dir", "").strip()
+    image_path = data.get("image_path", "").strip()
+    target_category = data.get("target_category", "").strip()
+
+    if not input_dir:
+        return {"error": "请填写输入目录"}, 400
+    if not image_path:
+        return {"error": "请提供要修正的图片路径"}, 400
+    if not target_category:
+        return {"error": "请选择修正后的品类"}, 400
+
+    try:
+        payload = reassign_semantic_review_item(
+            input_dir=input_dir,
+            image_path=image_path,
+            target_category=target_category,
+            allowed_categories=_get_classification_category_names(include_uncertain=True),
         )
     except Exception as exc:
         return {"error": str(exc)}, 400
@@ -1271,6 +1426,11 @@ def bundle_review():
             if not bundle_id:
                 return {"error": "缺少 bundle_id"}, 400
             payload = regenerate_bundle_candidate(input_dir=input_dir, bundle_id=bundle_id)
+        elif action == "delete":
+            bundle_id = str(data.get("bundle_id", "")).strip()
+            if not bundle_id:
+                return {"error": "缺少 bundle_id"}, 400
+            payload = delete_bundle_candidate(input_dir=input_dir, bundle_id=bundle_id)
         else:
             payload = save_bundle_review(
                 input_dir=input_dir,
@@ -1336,6 +1496,7 @@ def start_catalog():
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
     output_dir = data.get("output_dir", "").strip() or data.get("output_path", "").strip()
+    generation_mode = str(data.get("generation_mode", "standard")).strip().lower() or "standard"
 
     try:
         layout = normalize_layout_config(data.get("layout"))
@@ -1344,11 +1505,14 @@ def start_catalog():
 
     if not input_dir or not output_dir:
         return {"error": "请填写输入目录和输出文件夹"}, 400
+    if generation_mode not in CATALOG_GENERATION_MODES:
+        allowed = ", ".join(sorted(CATALOG_GENERATION_MODES))
+        return {"error": f"generation_mode 必须是以下值之一：{allowed}"}, 400
 
     _drain(_catalog_queue)
     threading.Thread(
         target=_run_catalog,
-        args=(input_dir, output_dir, layout),
+        args=(input_dir, output_dir, layout, generation_mode),
         daemon=True,
     ).start()
     return {"status": "started"}
@@ -1656,6 +1820,7 @@ def _run_catalog(
     input_dir: str,
     output_dir: str,
     layout: dict,
+    generation_mode: str,
 ) -> None:
     global _catalog_processing
 
@@ -1670,6 +1835,7 @@ def _run_catalog(
             input_dir=input_dir,
             output_dir=output_dir,
             layout=layout,
+            generation_mode=generation_mode,
             progress_callback=_emit,
         )
         _catalog_queue.put({"type": "done", **summary})
@@ -1754,24 +1920,15 @@ def _select_clip_device(torch_module) -> str:
 
 
 def _strip_classification_suffix(stem: str, category_names: list[str]) -> str:
-    original = str(stem or "")
-    lowered = original.lower()
-    suffixes = sorted(
-        {str(name or "").strip().lower() for name in [*category_names, UNCERTAIN_CATEGORY] if str(name or "").strip()},
-        key=len,
-        reverse=True,
+    return strip_catalog_category_suffix(
+        stem,
+        category_names=category_names,
+        extra_suffixes=[UNCERTAIN_CATEGORY],
     )
-    for suffix in suffixes:
-        token = f"_{suffix}"
-        if lowered.endswith(token):
-            trimmed = original[:-len(token)]
-            return trimmed or original
-    return original
 
 
 def _build_classified_name(base_stem: str, category: str, suffix: str) -> str:
-    normalized_base_stem = str(base_stem or "").strip() or "item"
-    return f"{normalized_base_stem}_{category}{suffix}"
+    return build_classified_catalog_name(base_stem, category, suffix)
 
 
 def _drain(q: queue.Queue) -> None:

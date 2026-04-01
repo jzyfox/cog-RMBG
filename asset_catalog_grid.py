@@ -7,7 +7,7 @@ import os
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
@@ -76,6 +76,7 @@ except AttributeError:  # Pillow < 9.1
 
 
 ProgressCallback = Callable[[dict], None]
+CATALOG_GENERATION_MODES = {"standard", "exhaustive"}
 
 
 @dataclass(frozen=True)
@@ -112,17 +113,29 @@ class ItemPlacement:
     y: int
 
 
+@dataclass(frozen=True)
+class BoxCandidatePlan:
+    box: LayoutBox
+    candidates: tuple[PreparedItem, ...]
+    match_mode: str
+
+
 def build_catalog_grids(
     input_dir: str | Path,
     output_dir: str | Path,
     layout: dict | None = None,
     background_color: str = DEFAULT_BACKGROUND,
+    generation_mode: str = "standard",
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
     """Build one layout-driven catalog grid image for each package subdirectory."""
     input_dir = Path(input_dir).resolve()
     output_dir, file_like_output = _normalize_output_dir(output_dir)
     normalized_layout = normalize_layout_config(layout)
+    generation_mode = str(generation_mode or "standard").strip().lower() or "standard"
+    if generation_mode not in CATALOG_GENERATION_MODES:
+        allowed = ", ".join(sorted(CATALOG_GENERATION_MODES))
+        raise ValueError(f"generation_mode must be one of: {allowed}")
     layout_boxes = _build_layout_boxes(normalized_layout["boxes"])
     accepted_types = _collect_accepted_types(layout_boxes)
 
@@ -146,6 +159,7 @@ def build_catalog_grids(
         "canvas_width": normalized_layout["canvas_width"],
         "canvas_height": normalized_layout["canvas_height"],
         "box_count": len(layout_boxes),
+        "generation_mode": generation_mode,
     })
     if file_like_output:
         _emit(progress_callback, {
@@ -163,6 +177,7 @@ def build_catalog_grids(
         "ignored": 0,
         "error": 0,
         "packages_rendered": 0,
+        "outputs_rendered": 0,
     }
     package_summaries: list[dict] = []
 
@@ -233,35 +248,58 @@ def build_catalog_grids(
                 "stats": dict(stats),
             })
 
-        assignments, assignment_summary = _assign_items(layout_boxes, candidate_items)
-        package_summary = _render_package_grid(
-            package_name=package_name,
-            layout=normalized_layout,
-            layout_boxes=layout_boxes,
-            assignments=assignments,
-            output_dir=output_dir,
-            background_color=background_color,
-        )
+        if generation_mode == "exhaustive":
+            package_summary = _render_exhaustive_package_grids(
+                package_name=package_name,
+                layout=normalized_layout,
+                layout_boxes=layout_boxes,
+                candidate_items=candidate_items,
+                output_dir=output_dir,
+                background_color=background_color,
+            )
+        else:
+            assignments, assignment_summary = _assign_items(layout_boxes, candidate_items)
+            package_summary = _render_package_grid(
+                package_name=package_name,
+                layout=normalized_layout,
+                layout_boxes=layout_boxes,
+                assignments=assignments,
+                output_dir=output_dir,
+                background_color=background_color,
+            )
+            package_summary.update(assignment_summary)
+            package_summary["missing_types"] = [
+                box.type for box in layout_boxes if box.type not in assignments
+            ]
 
         stats["selected"] += package_summary["items_placed"]
-        stats["packages_rendered"] += 1
+        stats["outputs_rendered"] += package_summary.get("variant_count", 0)
+        if package_summary.get("variant_count", 0) > 0:
+            stats["packages_rendered"] += 1
 
-        package_summary.update(assignment_summary)
         package_summary["ignored_types"] = ignored_types
-        package_summary["missing_types"] = [
-            box.type for box in layout_boxes if box.type not in assignments
-        ]
+        package_summary["generation_mode"] = generation_mode
         package_summaries.append(package_summary)
         _emit(progress_callback, {"type": "package_done", **package_summary, "stats": dict(stats)})
+
+    generated_files: list[str] = []
+    for item in package_summaries:
+        output_paths = item.get("output_paths") or []
+        if output_paths:
+            generated_files.extend(str(path) for path in output_paths)
+        elif item.get("output_path"):
+            generated_files.append(str(item["output_path"]))
 
     return {
         "output_dir": str(output_dir),
         "packages": len(package_summaries),
         "items": total_items,
-        "generated_files": [item["output_path"] for item in package_summaries],
+        "generated_files": generated_files,
         "stats": dict(stats),
         "package_summaries": package_summaries,
         "layout": normalized_layout,
+        "generation_mode": generation_mode,
+        "outputs_rendered": stats["outputs_rendered"],
     }
 
 
@@ -270,6 +308,7 @@ def build_catalog_grid(
     output_path: str | Path,
     layout: dict | None = None,
     background_color: str = DEFAULT_BACKGROUND,
+    generation_mode: str = "standard",
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
     return build_catalog_grids(
@@ -277,6 +316,7 @@ def build_catalog_grid(
         output_dir=output_path,
         layout=layout,
         background_color=background_color,
+        generation_mode=generation_mode,
         progress_callback=progress_callback,
     )
 
@@ -410,6 +450,53 @@ def normalize_catalog_type(type_name: str) -> str:
     return normalized
 
 
+def parse_catalog_category_from_stem(stem: str) -> str:
+    normalized_stem = str(stem or "").strip().lower()
+    if not normalized_stem:
+        return "default"
+
+    for suffix in KNOWN_CATEGORY_SUFFIXES:
+        if normalized_stem == suffix or normalized_stem.endswith(f"_{suffix}"):
+            return normalize_catalog_type(suffix)
+
+    if "_" not in normalized_stem:
+        return "default"
+    return normalize_catalog_type(normalized_stem.rsplit("_", 1)[-1])
+
+
+def strip_catalog_category_suffix(
+    stem: str,
+    category_names: list[str] | tuple[str, ...] | set[str] | None = None,
+    extra_suffixes: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str:
+    original = str(stem or "")
+    lowered = original.lower()
+    suffixes = set(KNOWN_CATEGORY_SUFFIXES)
+
+    for values in (category_names or (), extra_suffixes or ()):
+        for value in values:
+            raw = str(value or "").strip().lower()
+            if not raw:
+                continue
+            suffixes.add(raw)
+            normalized = normalize_catalog_type(raw)
+            if normalized and normalized != "default":
+                suffixes.add(normalized)
+
+    for suffix in sorted(suffixes, key=len, reverse=True):
+        token = f"_{suffix}"
+        if lowered.endswith(token):
+            trimmed = original[:-len(token)]
+            return trimmed or original
+    return original
+
+
+def build_classified_catalog_name(base_stem: str, category: str, suffix: str) -> str:
+    normalized_base_stem = str(base_stem or "").strip() or "item"
+    normalized_category = str(category or "").strip().lower() or "uncertain"
+    return f"{normalized_base_stem}_{normalized_category}{suffix}"
+
+
 def _render_manifest_canvas(
     items: list[dict],
     layout: dict | None,
@@ -444,23 +531,112 @@ def _render_package_grid(
     assignments: dict[str, AssignedItem],
     output_dir: Path,
     background_color: str,
+    variant_suffix: str | None = None,
 ) -> dict:
+    title_package_name = package_name if variant_suffix is None else f"{package_name}_{variant_suffix}"
     canvas, placements, base_summary = _compose_grid_canvas(
-        title_text=f"=== {package_name} ===",
+        title_text=f"=== {title_package_name} ===",
         layout=layout,
         layout_boxes=layout_boxes,
         assignments=assignments,
         background_color=background_color,
     )
-    output_path = output_dir / f"{package_name}_grid.png"
+    output_name = (
+        f"{package_name}_grid.png"
+        if variant_suffix is None
+        else f"{package_name}_grid_{variant_suffix}.png"
+    )
+    output_path = output_dir / output_name
     canvas.save(output_path)
 
     return {
         "package": package_name,
         "output_path": str(output_path),
+        "output_name": output_name,
+        "output_paths": [str(output_path)],
+        "variant_count": 1,
+        "first_output_name": output_name,
+        "last_output_name": output_name,
         **base_summary,
         "items_placed": len(placements),
         "box_count": len(layout_boxes),
+    }
+
+
+def _render_exhaustive_package_grids(
+    package_name: str,
+    layout: dict,
+    layout_boxes: list[LayoutBox],
+    candidate_items: dict[str, list[PreparedItem]],
+    output_dir: Path,
+    background_color: str,
+) -> dict:
+    candidate_plans, assignment_summary = _build_exhaustive_candidate_plans(layout_boxes, candidate_items)
+    empty_summary = {
+        "package": package_name,
+        "output_path": "",
+        "output_name": "",
+        "output_paths": [],
+        "variant_count": 0,
+        "first_output_name": "",
+        "last_output_name": "",
+        "canvas_width": layout["canvas_width"] + CANVAS_PADDING * 2,
+        "canvas_height": layout["canvas_height"] + CANVAS_PADDING * 2,
+        "layout_canvas_width": layout["canvas_width"],
+        "layout_canvas_height": layout["canvas_height"],
+        "items_placed": 0,
+        "box_count": len(layout_boxes),
+        "placement_details": [],
+        "unused_candidate_types": {},
+        **assignment_summary,
+    }
+    if assignment_summary["missing_types"]:
+        return {
+            **empty_summary,
+            "message": f"Missing required categories: {', '.join(assignment_summary['missing_types'])}",
+        }
+
+    rendered_variants: list[dict] = []
+    total_items_placed = 0
+    for variant_index, assignments in enumerate(_iter_exhaustive_assignments(candidate_plans)):
+        variant_summary = _render_package_grid(
+            package_name=package_name,
+            layout=layout,
+            layout_boxes=layout_boxes,
+            assignments=assignments,
+            output_dir=output_dir,
+            background_color=background_color,
+            variant_suffix=_index_to_alpha_suffix(variant_index),
+        )
+        rendered_variants.append(variant_summary)
+        total_items_placed += variant_summary["items_placed"]
+
+    if not rendered_variants:
+        return {
+            **empty_summary,
+            "message": "No complete combinations available without reusing the same image",
+        }
+
+    first_variant = rendered_variants[0]
+    last_variant = rendered_variants[-1]
+    return {
+        "package": package_name,
+        "output_path": first_variant["output_path"],
+        "output_name": first_variant["output_name"],
+        "output_paths": [item["output_path"] for item in rendered_variants],
+        "variant_count": len(rendered_variants),
+        "first_output_name": first_variant["output_name"],
+        "last_output_name": last_variant["output_name"],
+        "canvas_width": first_variant["canvas_width"],
+        "canvas_height": first_variant["canvas_height"],
+        "layout_canvas_width": first_variant["layout_canvas_width"],
+        "layout_canvas_height": first_variant["layout_canvas_height"],
+        "items_placed": total_items_placed,
+        "box_count": len(layout_boxes),
+        "placement_details": [],
+        "unused_candidate_types": {},
+        "message": "",
+        **assignment_summary,
     }
 
 
@@ -573,6 +749,107 @@ def _assign_items(
         "placement_details": placement_details,
         "unused_candidate_types": unused_candidate_types,
     }
+
+
+def _build_exhaustive_candidate_plans(
+    layout_boxes: list[LayoutBox],
+    candidate_items: dict[str, list[PreparedItem]],
+) -> tuple[list[BoxCandidatePlan], dict]:
+    plans: list[BoxCandidatePlan] = []
+    missing_types: list[str] = []
+    exact_filled = 0
+    fallback_filled = 0
+    fallback_usage: list[str] = []
+
+    for box in layout_boxes:
+        exact_candidates = list(candidate_items.get(box.type, []))
+        if exact_candidates:
+            plans.append(BoxCandidatePlan(
+                box=box,
+                candidates=tuple(exact_candidates),
+                match_mode="exact",
+            ))
+            exact_filled += 1
+            continue
+
+        selected_allowed_type = ""
+        selected_candidates: list[PreparedItem] = []
+        for allowed_type in box.allowed_types:
+            allowed_candidates = list(candidate_items.get(allowed_type, []))
+            if not allowed_candidates:
+                continue
+            selected_allowed_type = allowed_type
+            selected_candidates = allowed_candidates
+            break
+
+        if selected_candidates:
+            plans.append(BoxCandidatePlan(
+                box=box,
+                candidates=tuple(selected_candidates),
+                match_mode="fallback",
+            ))
+            fallback_filled += 1
+            fallback_usage.append(f"{box.type} -> {selected_allowed_type}")
+            continue
+
+        missing_types.append(box.type)
+
+    return plans, {
+        "exact_filled": exact_filled,
+        "fallback_filled": fallback_filled,
+        "fallback_usage": fallback_usage,
+        "missing_types": missing_types,
+    }
+
+
+def _iter_exhaustive_assignments(
+    candidate_plans: list[BoxCandidatePlan],
+    index: int = 0,
+    used_paths: set[Path] | None = None,
+    current_assignments: dict[str, AssignedItem] | None = None,
+) -> Iterator[dict[str, AssignedItem]]:
+    active_paths = used_paths if used_paths is not None else set()
+    active_assignments = current_assignments if current_assignments is not None else {}
+
+    if index >= len(candidate_plans):
+        yield dict(active_assignments)
+        return
+
+    plan = candidate_plans[index]
+    for item in plan.candidates:
+        if item.source_path in active_paths:
+            continue
+
+        active_paths.add(item.source_path)
+        active_assignments[plan.box.type] = _build_assignment(
+            plan.box,
+            item,
+            match_mode=plan.match_mode,
+        )
+        yield from _iter_exhaustive_assignments(
+            candidate_plans,
+            index=index + 1,
+            used_paths=active_paths,
+            current_assignments=active_assignments,
+        )
+        active_assignments.pop(plan.box.type, None)
+        active_paths.remove(item.source_path)
+
+
+def _index_to_alpha_suffix(index: int) -> str:
+    if index < 0:
+        raise ValueError("index must be greater than or equal to 0")
+
+    chars: list[str] = []
+    current = index
+    while True:
+        current, remainder = divmod(current, 26)
+        chars.append(chr(ord("a") + remainder))
+        if current == 0:
+            break
+        current -= 1
+
+    return "".join(reversed(chars))
 
 
 def _build_assignment(
@@ -714,13 +991,7 @@ def _discover_package_files(input_dir: Path) -> list[tuple[str, list[Path]]]:
 
 
 def _parse_category(stem: str) -> str:
-    normalized_stem = str(stem or "").strip().lower()
-    for suffix in KNOWN_CATEGORY_SUFFIXES:
-        if normalized_stem == suffix or normalized_stem.endswith(f"_{suffix}"):
-            return suffix
-    if "_" not in stem:
-        return "default"
-    return stem.rsplit("_", 1)[-1].strip().lower() or "default"
+    return parse_catalog_category_from_stem(stem)
 
 
 def _normalize_output_dir(output_target: str | Path) -> tuple[Path, bool]:

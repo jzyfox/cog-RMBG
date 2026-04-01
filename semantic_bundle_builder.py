@@ -33,7 +33,8 @@ SEED_TOP_K = 12
 AUTO_TOP_K = 8
 SEED_BEAM_WIDTH = 128
 AUTO_BEAM_WIDTH = 48
-SEED_NON_ANCHOR_MAX_APPEARANCES = 2
+SEED_NON_ANCHOR_MAX_APPEARANCES = 1
+SEED_MIN_NON_ANCHOR_SLOT_DIFFERENCE = 2
 
 BUNDLE_CATEGORIES: tuple[str, ...] = (
     "sofa",
@@ -238,6 +239,7 @@ def seed_bundle_candidates(
     existing_errors = _load_error_rows(input_root)
     existing_signatures = {bundle_signature(bundle) for bundle in workspace}
     reuse_counts = _build_reuse_counts(workspace)
+    existing_seeded_group = _get_seeded_group_bundles(workspace, str(seed_path))
 
     variants = _generate_bundle_variants(
         anchor_record=seed_record,
@@ -256,6 +258,7 @@ def seed_bundle_candidates(
         reuse_counts=reuse_counts,
         candidate_count=candidate_count,
         seed_path=str(seed_path),
+        comparison_bundles=existing_seeded_group,
     )
 
     combined = workspace + selected
@@ -324,6 +327,34 @@ def save_bundle_review(
     }
 
 
+def delete_bundle_candidate(
+    input_dir: str | Path,
+    bundle_id: str,
+) -> dict:
+    input_root = _resolve_input_root(input_dir)
+    normalized_bundle_id = str(bundle_id or "").strip()
+    if not normalized_bundle_id:
+        raise ValueError("Unknown bundle_id: <empty>")
+
+    semantic_records = _load_semantic_records(input_root, refresh=False)
+    workspace, workspace_errors = _load_workspace(input_root, semantic_records)
+    existing_errors = _load_error_rows(input_root)
+
+    remaining_workspace = [
+        bundle for bundle in workspace
+        if bundle["bundle_id"] != normalized_bundle_id
+    ]
+    if len(remaining_workspace) == len(workspace):
+        raise ValueError(f"Unknown bundle_id: {normalized_bundle_id}")
+
+    _persist_workspace(input_root, remaining_workspace, existing_errors + workspace_errors)
+    return {
+        "status": "deleted",
+        "bundle_id": normalized_bundle_id,
+        "stats": _workspace_stats(remaining_workspace),
+    }
+
+
 def regenerate_bundle_candidate(
     input_dir: str | Path,
     bundle_id: str,
@@ -342,6 +373,7 @@ def regenerate_bundle_candidate(
 
     remaining_workspace = [bundle for bundle in workspace if bundle["bundle_id"] != bundle_id]
     existing_signatures = {bundle_signature(bundle) for bundle in remaining_workspace}
+    existing_signatures.add(bundle_signature(current))
     reuse_counts = _build_reuse_counts(remaining_workspace)
 
     anchor_path = _resolve_image_path(current["anchor_image_path"], input_root)
@@ -365,7 +397,20 @@ def regenerate_bundle_candidate(
     if not variants:
         raise RuntimeError("Could not regenerate a new non-duplicate bundle from the current anchor")
 
-    regenerated = variants[0]
+    if current["generation_mode"] == "seeded":
+        selected, _ = _select_seeded_variants(
+            variants=variants,
+            existing_signatures=set(existing_signatures),
+            reuse_counts=reuse_counts,
+            candidate_count=1,
+            seed_path=str(anchor_path),
+            comparison_bundles=_get_seeded_group_bundles(remaining_workspace, str(anchor_path)),
+        )
+        if not selected:
+            raise RuntimeError("Could not regenerate a new diverse seeded bundle from the current anchor")
+        regenerated = selected[0]
+    else:
+        regenerated = variants[0]
     regenerated["status"] = "pending"
     regenerated["updated_at"] = _now_iso()
 
@@ -456,6 +501,60 @@ def bundle_signature(bundle: dict[str, Any]) -> str:
         for item in bundle.get("items", [])
     }
     return "||".join(item_map.get(category, "") for category in BUNDLE_CATEGORIES)
+
+
+def _get_seeded_group_bundles(workspace: list[dict[str, Any]], seed_path: str) -> list[dict[str, Any]]:
+    normalized_seed_path = str(Path(seed_path).resolve())
+    return [
+        bundle
+        for bundle in workspace
+        if bundle.get("generation_mode") == "seeded"
+        and str(Path(bundle.get("anchor_image_path") or "").resolve()) == normalized_seed_path
+    ]
+
+
+def _get_non_anchor_image_paths(bundle: dict[str, Any], seed_path: str) -> list[str]:
+    normalized_seed_path = str(Path(seed_path).resolve())
+    return [
+        str(Path(item.get("image_path") or item.get("source_image_path")).resolve())
+        for item in bundle.get("items", [])
+        if str(Path(item.get("image_path") or item.get("source_image_path")).resolve()) != normalized_seed_path
+    ]
+
+
+def _non_anchor_slot_difference_count(
+    left_bundle: dict[str, Any],
+    right_bundle: dict[str, Any],
+    seed_path: str,
+) -> int:
+    normalized_seed_path = str(Path(seed_path).resolve())
+    left_map = {
+        normalize_catalog_type(item.get("category")): str(Path(item.get("image_path") or item.get("source_image_path")).resolve())
+        for item in left_bundle.get("items", [])
+        if str(Path(item.get("image_path") or item.get("source_image_path")).resolve()) != normalized_seed_path
+    }
+    right_map = {
+        normalize_catalog_type(item.get("category")): str(Path(item.get("image_path") or item.get("source_image_path")).resolve())
+        for item in right_bundle.get("items", [])
+        if str(Path(item.get("image_path") or item.get("source_image_path")).resolve()) != normalized_seed_path
+    }
+    return sum(
+        1
+        for category in BUNDLE_CATEGORIES
+        if category in left_map or category in right_map
+        if left_map.get(category) != right_map.get(category)
+    )
+
+
+def _is_too_similar_seeded_bundle(
+    bundle: dict[str, Any],
+    comparison_bundles: list[dict[str, Any]],
+    seed_path: str,
+) -> bool:
+    return any(
+        _non_anchor_slot_difference_count(bundle, other_bundle, seed_path) < SEED_MIN_NON_ANCHOR_SLOT_DIFFERENCE
+        for other_bundle in comparison_bundles
+    )
 
 
 def _resolve_input_root(input_dir: str | Path) -> Path:
@@ -721,9 +820,15 @@ def _select_seeded_variants(
     reuse_counts: Counter,
     candidate_count: int,
     seed_path: str,
+    comparison_bundles: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     selected: list[dict[str, Any]] = []
+    normalized_seed_path = str(Path(seed_path).resolve())
+    comparison_bundles = list(comparison_bundles or [])
     local_non_anchor_usage: Counter = Counter()
+    for bundle in comparison_bundles:
+        for image_path in _get_non_anchor_image_paths(bundle, seed_path):
+            local_non_anchor_usage[image_path] += 1
     temp_reuse = Counter(reuse_counts)
     errors: list[dict[str, Any]] = []
 
@@ -736,9 +841,14 @@ def _select_seeded_variants(
 
         non_anchor_items = [
             item for item in bundle["items"]
-            if str(item["image_path"]) != seed_path
+            if str(Path(item["image_path"]).resolve()) != normalized_seed_path
         ]
-        if any(local_non_anchor_usage[item["image_path"]] >= SEED_NON_ANCHOR_MAX_APPEARANCES for item in non_anchor_items):
+        if any(
+            local_non_anchor_usage[str(Path(item["image_path"]).resolve())] >= SEED_NON_ANCHOR_MAX_APPEARANCES
+            for item in non_anchor_items
+        ):
+            continue
+        if _is_too_similar_seeded_bundle(bundle, comparison_bundles + selected, seed_path):
             continue
         if any(temp_reuse[item["image_path"]] >= REUSE_LIMITS[item["category"]] for item in bundle["items"]):
             continue
@@ -747,13 +857,13 @@ def _select_seeded_variants(
         existing_signatures.add(signature)
         for item in bundle["items"]:
             temp_reuse[item["image_path"]] += 1
-            if item["image_path"] != seed_path:
-                local_non_anchor_usage[item["image_path"]] += 1
+            if str(Path(item["image_path"]).resolve()) != normalized_seed_path:
+                local_non_anchor_usage[str(Path(item["image_path"]).resolve())] += 1
 
     if len(selected) < candidate_count:
         errors.append(_build_error_row(
             error_type="seed_candidate_shortage",
-            message="Could not produce the requested number of unique seeded bundles",
+            message="Could not produce the requested number of diverse seeded bundles under the current reuse constraints",
             extra={
                 "requested_count": candidate_count,
                 "generated_count": len(selected),
