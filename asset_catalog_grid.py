@@ -26,7 +26,7 @@ CATEGORY_ALIASES: dict[str, tuple[str, ...]] = {
     "dining_table": ("dining_table", "table"),
     "dining_chair": ("dining_chair", "chair"),
     "bed": ("bed", "bedframe"),
-    "bedside_table": ("bedside_table", "side_table", "nightstand", "night_table"),
+    "cabinet": ("cabinet", "bedside_table", "side_table", "nightstand", "night_table"),
 }
 KNOWN_CATEGORY_SUFFIXES: tuple[str, ...] = tuple(sorted({
     value
@@ -45,7 +45,7 @@ DEFAULT_CATALOG_LAYOUT: dict = {
             "y": 290,
             "width": 220,
             "height": 140,
-            "allowed_types": ["dining_table", "bedside_table"],
+            "allowed_types": ["dining_table", "cabinet"],
         },
         {"type": "lounge_chair", "x": 360, "y": 230, "width": 220, "height": 260, "allowed_types": []},
         {
@@ -54,12 +54,12 @@ DEFAULT_CATALOG_LAYOUT: dict = {
             "y": 540,
             "width": 360,
             "height": 200,
-            "allowed_types": ["coffee_table", "bedside_table"],
+            "allowed_types": ["coffee_table", "cabinet"],
         },
         {"type": "dining_chair", "x": 430, "y": 540, "width": 150, "height": 230, "allowed_types": []},
         {"type": "bed", "x": 40, "y": 780, "width": 380, "height": 180, "allowed_types": []},
         {
-            "type": "bedside_table",
+            "type": "cabinet",
             "x": 430,
             "y": 790,
             "width": 140,

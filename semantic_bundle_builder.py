@@ -16,7 +16,7 @@ from asset_catalog_grid import (
     render_catalog_manifest_preview,
 )
 from semantic_tagger import (
-    SEMANTIC_FRONTEND_CONFIG,
+    SEMANTIC_CATEGORY_LABELS,
     SEMANTIC_INDEX_FILE,
     rebuild_semantic_indices,
 )
@@ -42,7 +42,7 @@ BUNDLE_CATEGORIES: tuple[str, ...] = (
     "dining_table",
     "dining_chair",
     "bed",
-    "bedside_table",
+    "cabinet",
 )
 BUNDLE_CATEGORY_SET = set(BUNDLE_CATEGORIES)
 
@@ -55,14 +55,17 @@ REUSE_LIMITS = {
     "coffee_table": 3,
     "lounge_chair": 3,
     "dining_chair": 3,
-    "bedside_table": 3,
+    "cabinet": 3,
 }
 STATUS_OPTIONS = {"pending", "accepted", "rejected"}
 GENERATION_MODES = {"auto", "seeded"}
 
 BUNDLE_FRONTEND_CONFIG = {
     "bundle_categories": list(BUNDLE_CATEGORIES),
-    "category_labels": dict(SEMANTIC_FRONTEND_CONFIG.get("category_labels", {})),
+    "category_labels": {
+        category: SEMANTIC_CATEGORY_LABELS.get(category, category)
+        for category in BUNDLE_CATEGORIES
+    },
     "default_target_count": DEFAULT_BUNDLE_TARGET_COUNT,
     "default_seed_candidate_count": DEFAULT_SEED_CANDIDATE_COUNT,
     "reuse_limits": dict(REUSE_LIMITS),

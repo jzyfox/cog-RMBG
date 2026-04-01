@@ -150,8 +150,8 @@ SEMANTIC_CATEGORY_DEFINITIONS: dict[str, dict[str, Any]] = {
             _enum_field("base_style", "底座样式", ["四脚", "柱式", "框架", "板式", "其他"]),
         ],
     },
-    "bedside_table": {
-        "label": "床头柜",
+    "cabinet": {
+        "label": "柜类",
         "detail_fields": [
             _enum_field("tabletop_shape", "台面形状", ["圆形", "正方形", "长方形", "椭圆形", "异形", "其他"]),
             _enum_field("base_style", "底座样式", ["高脚式", "落地式", "悬浮式", "其他"]),
@@ -170,28 +170,70 @@ SEMANTIC_SHARED_ENUMS = {
     "materials": MATERIAL_OPTIONS,
 }
 
-SEMANTIC_FRONTEND_CONFIG = {
-    "category_options": list(SUPPORTED_SEMANTIC_CATEGORIES),
-    "category_labels": {
-        category: definition["label"]
-        for category, definition in SEMANTIC_CATEGORY_DEFINITIONS.items()
-    },
-    "category_schemas": {
-        category: {
-            "label": definition["label"],
-            "detail_fields": [dict(field) for field in definition["detail_fields"]],
-        }
-        for category, definition in SEMANTIC_CATEGORY_DEFINITIONS.items()
-    },
-    "shared_enums": SEMANTIC_SHARED_ENUMS,
-    "enums": SEMANTIC_SHARED_ENUMS,
-    "default_category": SEMANTIC_CATEGORY,
-    "model_options": list(SUPPORTED_SEMANTIC_MODELS),
-    "model_labels": dict(SEMANTIC_MODEL_LABELS),
-    "default_model": DEFAULT_SEMANTIC_MODEL,
-    "default_sleep_seconds": DEFAULT_SLEEP_SECONDS,
-    "default_max_retries": DEFAULT_MAX_RETRIES,
+SEMANTIC_CATEGORY_LABELS = {
+    category: definition["label"]
+    for category, definition in SEMANTIC_CATEGORY_DEFINITIONS.items()
 }
+SEMANTIC_CATEGORY_SCHEMAS = {
+    category: {
+        "label": definition["label"],
+        "detail_fields": [dict(field) for field in definition["detail_fields"]],
+    }
+    for category, definition in SEMANTIC_CATEGORY_DEFINITIONS.items()
+}
+
+
+def build_semantic_frontend_config(category_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    raw_rows = category_rows if isinstance(category_rows, list) and category_rows else []
+    category_items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for raw_row in raw_rows:
+        if isinstance(raw_row, dict):
+            raw_name = raw_row.get("name")
+        else:
+            raw_name = raw_row
+
+        normalized = normalize_catalog_type(str(raw_name or "").strip().lower())
+        if not normalized or normalized == "default" or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        category_items.append({
+            "value": normalized,
+            "label": normalized,
+            "supported": normalized in SUPPORTED_SEMANTIC_CATEGORY_SET,
+        })
+
+    if not category_items:
+        category_items = [
+            {"value": category, "label": category, "supported": True}
+            for category in SUPPORTED_SEMANTIC_CATEGORIES
+        ]
+
+    category_options = [item["value"] for item in category_items if item["supported"]]
+    category_labels = dict(SEMANTIC_CATEGORY_LABELS)
+    for item in category_items:
+        category_labels.setdefault(item["value"], item["label"])
+
+    default_category = category_options[0] if category_options else SEMANTIC_CATEGORY
+    return {
+        "category_items": category_items,
+        "category_options": category_options,
+        "category_labels": category_labels,
+        "category_schemas": dict(SEMANTIC_CATEGORY_SCHEMAS),
+        "shared_enums": SEMANTIC_SHARED_ENUMS,
+        "enums": SEMANTIC_SHARED_ENUMS,
+        "default_category": default_category,
+        "model_options": list(SUPPORTED_SEMANTIC_MODELS),
+        "model_labels": dict(SEMANTIC_MODEL_LABELS),
+        "default_model": DEFAULT_SEMANTIC_MODEL,
+        "default_sleep_seconds": DEFAULT_SLEEP_SECONDS,
+        "default_max_retries": DEFAULT_MAX_RETRIES,
+    }
+
+
+SEMANTIC_FRONTEND_CONFIG = build_semantic_frontend_config()
 
 
 def build_semantic_tags(

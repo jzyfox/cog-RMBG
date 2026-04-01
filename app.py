@@ -13,7 +13,7 @@ import webbrowser
 from copy import deepcopy
 from pathlib import Path
 
-from asset_catalog_grid import DEFAULT_CATALOG_LAYOUT, normalize_layout_config
+from asset_catalog_grid import DEFAULT_CATALOG_LAYOUT, normalize_catalog_type, normalize_layout_config
 from flask import Flask, Response, abort, render_template_string, request, send_file
 from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_WIDTH
 from PIL import Image
@@ -34,7 +34,7 @@ from semantic_tagger import (
     DEFAULT_SEMANTIC_MODEL,
     DEFAULT_MAX_RETRIES as DEFAULT_SEMANTIC_MAX_RETRIES,
     DEFAULT_SLEEP_SECONDS as DEFAULT_SEMANTIC_SLEEP_SECONDS,
-    SEMANTIC_FRONTEND_CONFIG,
+    build_semantic_frontend_config,
     build_semantic_tags,
     load_semantic_review_data,
     normalize_semantic_model,
@@ -55,6 +55,27 @@ def _load_categories() -> list[dict]:
         except Exception:
             pass
     return DEFAULT_CATEGORIES
+
+
+def _get_semantic_frontend_config(category_rows: list[dict] | None = None) -> dict:
+    return build_semantic_frontend_config(category_rows if category_rows is not None else _load_categories())
+
+
+def _resolve_semantic_request_category(raw_category: str | None, semantic_config: dict | None = None) -> str:
+    config = semantic_config or _get_semantic_frontend_config()
+    normalized = normalize_catalog_type(str(raw_category or "").strip().lower())
+    if not normalized or normalized == "default":
+        return str(config.get("default_category") or DEFAULT_CATEGORIES[0]["name"])
+
+    category_items = {
+        str(item.get("value") or ""): item
+        for item in config.get("category_items", [])
+        if isinstance(item, dict) and item.get("value")
+    }
+    matched_item = category_items.get(normalized)
+    if matched_item and not bool(matched_item.get("supported")):
+        raise ValueError(f"该品类暂未支持语义标签：{normalized}")
+    return normalized
 
 
 def _format_number(value: float) -> int | float:
@@ -91,6 +112,8 @@ _classify_processing = False
 _clip_processor = None
 _clip_model = None
 _clip_device = None
+DEFAULT_CLASSIFY_THRESHOLD_STEP = 0.1
+UNCERTAIN_CATEGORY = "uncertain"
 
 _catalog_queue: queue.Queue = queue.Queue()
 _catalog_processing = False
@@ -902,16 +925,19 @@ HTML = (Path(__file__).parent / "app_template.html").read_text(encoding="utf-8")
 # ──────────────────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
+    categories = _load_categories()
+    semantic_config = _get_semantic_frontend_config(categories)
     return render_template_string(
         HTML,
-        default_categories=_load_categories(),
+        default_categories=categories,
         default_catalog_layout=_load_catalog_layout(),
-        default_semantic_config=SEMANTIC_FRONTEND_CONFIG,
+        default_semantic_config=semantic_config,
         default_bundle_config=BUNDLE_FRONTEND_CONFIG,
         default_bundle_target_count=DEFAULT_BUNDLE_TARGET_COUNT,
         default_seed_candidate_count=DEFAULT_SEED_CANDIDATE_COUNT,
         default_semantic_sleep_seconds=DEFAULT_SEMANTIC_SLEEP_SECONDS,
         default_semantic_max_retries=DEFAULT_SEMANTIC_MAX_RETRIES,
+        default_classify_threshold_step=int(DEFAULT_CLASSIFY_THRESHOLD_STEP * 100),
         default_clean_edge_width=DEFAULT_EDGE_WIDTH,
         default_clean_edge_threshold=int(DEFAULT_EDGE_BRIGHTNESS_THRESHOLD),
     )
@@ -1018,8 +1044,15 @@ def start_classify():
 
     try:
         threshold = float(data.get("threshold", 0))
+        threshold_step = float(data.get("threshold_step", DEFAULT_CLASSIFY_THRESHOLD_STEP))
     except (TypeError, ValueError):
-        return {"error": "置信度阈值必须是合法数字"}, 400
+        return {"error": "置信度阈值和每轮降幅必须是合法数字"}, 400
+
+    raw_auto_retry_uncertain = data.get("auto_retry_uncertain", False)
+    if isinstance(raw_auto_retry_uncertain, str):
+        auto_retry_uncertain = raw_auto_retry_uncertain.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        auto_retry_uncertain = bool(raw_auto_retry_uncertain)
 
     if not input_dir or not output_dir:
         return {"error": "请填写输入和输出目录"}, 400
@@ -1027,11 +1060,13 @@ def start_classify():
         return {"error": "请至少提供一个分类"}, 400
     if threshold < 0 or threshold > 1:
         return {"error": "置信度阈值必须在 0 到 1 之间"}, 400
+    if threshold_step <= 0 or threshold_step > 1:
+        return {"error": "每轮降幅必须大于 0 且不超过 1"}, 400
 
     _drain(_classify_queue)
     threading.Thread(
         target=_run_classify,
-        args=(input_dir, output_dir, categories, threshold),
+        args=(input_dir, output_dir, categories, threshold, auto_retry_uncertain, threshold_step),
         daemon=True,
     ).start()
     return {"status": "started"}
@@ -1051,16 +1086,17 @@ def start_semantic():
 
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
-    category = data.get("category", "").strip() or SEMANTIC_FRONTEND_CONFIG["default_category"]
     model = data.get("model", "").strip() or DEFAULT_SEMANTIC_MODEL
+    semantic_config = _get_semantic_frontend_config()
 
     try:
+        category = _resolve_semantic_request_category(data.get("category", ""), semantic_config)
         model = normalize_semantic_model(model)
         skip_existing = bool(data.get("skip_existing", True))
         sleep_seconds = float(data.get("sleep_seconds", DEFAULT_SEMANTIC_SLEEP_SECONDS))
         max_retries = int(data.get("max_retries", DEFAULT_SEMANTIC_MAX_RETRIES))
-    except (TypeError, ValueError):
-        return {"error": "视觉模型、请求间隔和重试次数必须是合法值"}, 400
+    except Exception as exc:
+        return {"error": str(exc)}, 400
 
     if not input_dir:
         return {"error": "请填写输入目录"}, 400
@@ -1083,12 +1119,12 @@ def stream_semantic():
 def load_semantic():
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
-    category = data.get("category", "").strip() or SEMANTIC_FRONTEND_CONFIG["default_category"]
 
     if not input_dir:
         return {"error": "请填写输入目录"}, 400
 
     try:
+        category = _resolve_semantic_request_category(data.get("category", ""))
         payload = load_semantic_review_data(input_dir=input_dir, category=category)
     except Exception as exc:
         return {"error": str(exc)}, 400
@@ -1099,13 +1135,13 @@ def load_semantic():
 def save_semantic():
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
-    category = data.get("category", "").strip() or SEMANTIC_FRONTEND_CONFIG["default_category"]
     items = data.get("items", [])
 
     if not input_dir:
         return {"error": "请填写输入目录"}, 400
 
     try:
+        category = _resolve_semantic_request_category(data.get("category", ""))
         payload = save_semantic_review_items(
             input_dir=input_dir,
             category=category,
@@ -1420,6 +1456,8 @@ def _run_classify(
     output_dir: str,
     categories: list[dict],
     threshold: float,
+    auto_retry_uncertain: bool = False,
+    threshold_step: float = DEFAULT_CLASSIFY_THRESHOLD_STEP,
 ) -> None:
     global _classify_processing, _clip_processor, _clip_model, _clip_device
 
@@ -1449,7 +1487,13 @@ def _run_classify(
             )})
             return
 
-        _classify_queue.put({"type": "start", "total": len(images)})
+        _classify_queue.put({
+            "type": "start",
+            "total": len(images),
+            "threshold": threshold,
+            "auto_retry_uncertain": auto_retry_uncertain,
+            "threshold_step": threshold_step,
+        })
 
         if _clip_model is None:
             _classify_queue.put({"type": "log", "message": "正在加载 CLIP 模型（首次运行会下载权重）..."})
@@ -1463,59 +1507,144 @@ def _run_classify(
 
         cat_names = [c["name"] for c in categories]
         text_prompts = [c["prompt"] for c in categories]
-        stats: dict[str, int] = {}
+        stats: dict[str, int] = {"error": 0}
         out.mkdir(parents=True, exist_ok=True)
+        current_assignments: dict[str, str] = {}
+        pending_tasks: list[dict] = [
+            {
+                "item_id": str(img_path.relative_to(inp).as_posix()),
+                "source_path": img_path,
+                "relative_dir": img_path.parent.relative_to(inp),
+                "base_stem": _strip_classification_suffix(img_path.stem, cat_names),
+                "suffix": img_path.suffix,
+                "from_output": False,
+            }
+            for img_path in images
+        ]
+        current_threshold = threshold
+        pass_index = 0
+        scope = "all"
 
-        for i, img_path in enumerate(images, start=1):
-            try:
-                with Image.open(img_path) as raw:
-                    rgb_img = _to_white_rgb(raw)
+        while pending_tasks:
+            pass_index += 1
+            _classify_queue.put({
+                "type": "pass_start",
+                "pass_index": pass_index,
+                "scope": scope,
+                "threshold": current_threshold,
+                "total": len(pending_tasks),
+                "remaining_uncertain": len(pending_tasks) if scope == "uncertain" else 0,
+            })
 
-                inputs = _clip_processor(
-                    text=text_prompts,
-                    images=rgb_img,
-                    return_tensors="pt",
-                    padding=True,
-                ).to(_clip_device)
+            next_pending_tasks: list[dict] = []
 
-                with torch.no_grad():
-                    probs = _clip_model(**inputs).logits_per_image.softmax(dim=1).squeeze()
+            for i, task in enumerate(pending_tasks, start=1):
+                img_path = Path(task["source_path"])
+                try:
+                    with Image.open(img_path) as raw:
+                        rgb_img = _to_white_rgb(raw)
 
-                best_idx = int(probs.argmax().item())
-                confidence = float(probs[best_idx].item())
-                category = cat_names[best_idx] if confidence >= threshold else "uncertain"
+                    inputs = _clip_processor(
+                        text=text_prompts,
+                        images=rgb_img,
+                        return_tensors="pt",
+                        padding=True,
+                    ).to(_clip_device)
 
-                dest_dir = out / img_path.parent.relative_to(inp)
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                new_name = f"{img_path.stem}_{category}{img_path.suffix}"
-                shutil.copy2(img_path, dest_dir / new_name)
+                    with torch.no_grad():
+                        probs = _clip_model(**inputs).logits_per_image.softmax(dim=1).squeeze()
 
-                stats[category] = stats.get(category, 0) + 1
+                    best_idx = int(probs.argmax().item())
+                    confidence = float(probs[best_idx].item())
+                    category = cat_names[best_idx] if confidence >= current_threshold else UNCERTAIN_CATEGORY
 
-                _classify_queue.put({
-                    "type": "progress",
-                    "current": i,
-                    "total": len(images),
-                    "file": img_path.name,
-                    "category": category,
-                    "confidence": confidence,
-                    "stats": dict(stats),
-                })
+                    dest_dir = out / Path(task["relative_dir"])
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest_path = dest_dir / _build_classified_name(
+                        base_stem=str(task["base_stem"]),
+                        category=category,
+                        suffix=str(task["suffix"]),
+                    )
 
-            except Exception as exc:
-                stats["error"] = stats.get("error", 0) + 1
-                _classify_queue.put({"type": "error_item", "file": img_path.name, "message": str(exc)})
-                _classify_queue.put({
-                    "type": "progress",
-                    "current": i,
-                    "total": len(images),
-                    "file": img_path.name,
-                    "category": "error",
-                    "confidence": 0.0,
-                    "stats": dict(stats),
-                })
+                    if img_path != dest_path:
+                        shutil.copy2(img_path, dest_path)
+                        if bool(task.get("from_output")) and img_path.exists():
+                            img_path.unlink()
 
-        _classify_queue.put({"type": "done", "stats": dict(stats)})
+                    previous_category = current_assignments.get(str(task["item_id"]))
+                    if previous_category is None:
+                        stats[category] = stats.get(category, 0) + 1
+                    elif previous_category != category:
+                        previous_count = stats.get(previous_category, 0)
+                        if previous_count > 0:
+                            stats[previous_category] = previous_count - 1
+                        stats[category] = stats.get(category, 0) + 1
+                    current_assignments[str(task["item_id"])] = category
+
+                    if category == UNCERTAIN_CATEGORY:
+                        next_pending_tasks.append({
+                            **task,
+                            "source_path": dest_path,
+                            "from_output": True,
+                        })
+
+                    _classify_queue.put({
+                        "type": "progress",
+                        "current": i,
+                        "total": len(pending_tasks),
+                        "file": img_path.name,
+                        "category": category,
+                        "confidence": confidence,
+                        "stats": dict(stats),
+                        "pass_index": pass_index,
+                        "threshold": current_threshold,
+                    })
+
+                except Exception as exc:
+                    stats["error"] = stats.get("error", 0) + 1
+                    _classify_queue.put({
+                        "type": "error_item",
+                        "file": img_path.name,
+                        "message": str(exc),
+                        "pass_index": pass_index,
+                        "threshold": current_threshold,
+                    })
+                    _classify_queue.put({
+                        "type": "progress",
+                        "current": i,
+                        "total": len(pending_tasks),
+                        "file": img_path.name,
+                        "category": "error",
+                        "confidence": 0.0,
+                        "stats": dict(stats),
+                        "pass_index": pass_index,
+                        "threshold": current_threshold,
+                    })
+
+            _classify_queue.put({
+                "type": "pass_done",
+                "pass_index": pass_index,
+                "scope": scope,
+                "threshold": current_threshold,
+                "total": len(pending_tasks),
+                "remaining_uncertain": stats.get(UNCERTAIN_CATEGORY, 0),
+                "stats": dict(stats),
+            })
+
+            if (not auto_retry_uncertain) or (not next_pending_tasks) or current_threshold <= 0:
+                break
+
+            current_threshold = max(0.0, current_threshold - threshold_step)
+            pending_tasks = next_pending_tasks
+            scope = "uncertain"
+
+        _classify_queue.put({
+            "type": "done",
+            "stats": dict(stats),
+            "passes": pass_index,
+            "threshold": current_threshold,
+            "remaining_uncertain": stats.get(UNCERTAIN_CATEGORY, 0),
+        })
 
     except Exception as exc:
         _classify_queue.put({"type": "error", "message": str(exc)})
@@ -1622,6 +1751,27 @@ def _select_clip_device(torch_module) -> str:
     if mps_backend is not None and mps_backend.is_available():
         return "mps"
     return "cpu"
+
+
+def _strip_classification_suffix(stem: str, category_names: list[str]) -> str:
+    original = str(stem or "")
+    lowered = original.lower()
+    suffixes = sorted(
+        {str(name or "").strip().lower() for name in [*category_names, UNCERTAIN_CATEGORY] if str(name or "").strip()},
+        key=len,
+        reverse=True,
+    )
+    for suffix in suffixes:
+        token = f"_{suffix}"
+        if lowered.endswith(token):
+            trimmed = original[:-len(token)]
+            return trimmed or original
+    return original
+
+
+def _build_classified_name(base_stem: str, category: str, suffix: str) -> str:
+    normalized_base_stem = str(base_stem or "").strip() or "item"
+    return f"{normalized_base_stem}_{category}{suffix}"
 
 
 def _drain(q: queue.Queue) -> None:

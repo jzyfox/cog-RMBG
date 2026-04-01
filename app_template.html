@@ -175,7 +175,17 @@
           <span id="threshold-label" class="text-sm text-indigo-400 font-mono">0%（不过滤）</span>
         </div>
         <input id="cl-threshold" type="range" min="0" max="95" step="5" value="0" oninput="updateThresholdLabel(this.value)" class="w-full h-1.5 rounded-full" />
-        <p class="text-xs text-gray-600">低于阈值的图片将归入 <span class="text-gray-400">uncertain</span> 文件夹，方便人工复查。</p>
+        <p class="text-xs text-gray-600">分类结果会写入输出目录镜像结构，文件名末尾追加 <span class="text-gray-400">_&lt;category&gt;</span> 或 <span class="text-gray-400">_uncertain</span>。</p>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-[1fr_180px] gap-3 items-end">
+        <label class="flex items-center gap-2 text-sm text-gray-300 min-h-[42px]">
+          <input id="cl-auto-retry-uncertain" type="checkbox" class="w-4 h-4 rounded border-gray-700 bg-gray-950 text-violet-500" />
+          <span>自动继续处理 uncertain</span>
+        </label>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">每轮降幅（%）</label>
+          <input id="cl-threshold-step" type="number" min="1" max="100" step="5" value="{{ default_classify_threshold_step }}" />
+        </div>
       </div>
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-3">
@@ -237,8 +247,8 @@
         </div>
       </div>
       <div class="text-xs text-gray-500 leading-6 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
-        当前语义标签工作台支持 7 个套餐相关品类，批量打标仍按“单次选择一个品类”运行。
-        程序会在每张图片同级写入同名 <span class="font-mono text-gray-300">.json</span>，
+        目标品类会读取“图片分类”里保存的分类配置顺序。当前语义标签只支持其中 7 个套餐相关品类，
+        未支持的分类会显示在下拉中，但无法启动打标。程序会在每张图片同级写入同名 <span class="font-mono text-gray-300">.json</span>，
         并在输入根目录聚合生成 <span class="font-mono text-gray-300">semantic_tags.jsonl</span> 与
         <span class="font-mono text-gray-300">semantic_tag_errors.jsonl</span>。
       </div>
@@ -559,11 +569,11 @@
             <div id="cg-box-editor" class="hidden flex flex-col gap-3">
               <div class="flex flex-col gap-1.5">
                 <label class="text-sm text-gray-300">类型</label>
-                <input id="cg-box-type" class="box-prop-input" type="text" placeholder="例如：sofa / bedside_table" />
+                <input id="cg-box-type" class="box-prop-input" type="text" placeholder="例如：sofa / cabinet" />
               </div>
               <div class="flex flex-col gap-1.5">
                 <label class="text-sm text-gray-300">候选类别</label>
-                <input id="cg-box-allowed-types" class="box-prop-input" type="text" placeholder="例如：dining_table, bedside_table" />
+                <input id="cg-box-allowed-types" class="box-prop-input" type="text" placeholder="例如：dining_table, cabinet" />
                 <div class="text-xs text-gray-500">逗号分隔。系统会先匹配当前类型，再按这里的顺序兜底补位。</div>
               </div>
               <div class="grid grid-cols-2 gap-3">
@@ -621,7 +631,7 @@ const CATALOG_TYPE_ALIASES = {
   dining_table: ['dining_table', 'table'],
   dining_chair: ['dining_chair', 'chair'],
   bed: ['bed', 'bedframe'],
-  bedside_table: ['bedside_table', 'side_table', 'nightstand', 'night_table'],
+  cabinet: ['cabinet', 'bedside_table', 'side_table', 'nightstand', 'night_table'],
 };
 
 const catalogEditorState = {
@@ -1678,7 +1688,7 @@ function saveAllSemanticItems() {
 }
 
 function getDefaultSemanticCategory() {
-  return DEFAULT_SEMANTIC_CONFIG.default_category || (DEFAULT_SEMANTIC_CONFIG.category_options || [])[0] || 'sofa';
+  return DEFAULT_SEMANTIC_CONFIG.default_category || getSemanticCategoryOptions()[0] || 'sofa';
 }
 
 function getDefaultSemanticModel() {
@@ -1724,19 +1734,54 @@ function getSemanticSharedEnums() {
   return DEFAULT_SEMANTIC_CONFIG.shared_enums || DEFAULT_SEMANTIC_CONFIG.enums || {};
 }
 
+function getSemanticCategoryItems() {
+  const rawItems = Array.isArray(DEFAULT_SEMANTIC_CONFIG.category_items) ? DEFAULT_SEMANTIC_CONFIG.category_items : [];
+  const normalizedItems = rawItems
+    .map(item => {
+      const value = String(item?.value || '').trim();
+      if (!value) return null;
+      return {
+        value,
+        label: String(item?.label || value).trim() || value,
+        supported: item?.supported !== false,
+      };
+    })
+    .filter(Boolean);
+  if (normalizedItems.length) return normalizedItems;
+  return (DEFAULT_SEMANTIC_CONFIG.category_options || ['sofa']).map(value => ({
+    value,
+    label: value,
+    supported: true,
+  }));
+}
+
+function getSemanticCategoryItem(category) {
+  const normalized = String(category || '').trim();
+  return getSemanticCategoryItems().find(item => item.value === normalized) || null;
+}
+
 function getSemanticCategoryOptions() {
-  const options = DEFAULT_SEMANTIC_CONFIG.category_options || [];
-  return Array.isArray(options) && options.length ? options : [getDefaultSemanticCategory()];
+  const options = getSemanticCategoryItems()
+    .filter(item => item.supported)
+    .map(item => item.value);
+  return options.length ? options : (DEFAULT_SEMANTIC_CONFIG.category_options || []);
 }
 
 function isSemanticCategorySupported(category) {
-  return getSemanticCategoryOptions().includes(String(category || '').trim());
+  const item = getSemanticCategoryItem(category);
+  return Boolean(item && item.supported);
 }
 
 function getSemanticCategoryLabel(category) {
   const normalized = String(category || '').trim();
   const labels = DEFAULT_SEMANTIC_CONFIG.category_labels || {};
   return labels[normalized] || normalized || getDefaultSemanticCategory();
+}
+
+function getSemanticUnsupportedCategoryMessage(category) {
+  const item = getSemanticCategoryItem(category);
+  const label = item?.label || String(category || '').trim() || '该品类';
+  return `${label} 暂未支持语义标签`;
 }
 
 function getSemanticCategorySchema(category) {
@@ -1896,14 +1941,26 @@ function initializeSemanticUI() {
   const modelSelect = document.getElementById('sem-model');
   if (!categorySelect) return;
 
+  const categoryItems = getSemanticCategoryItems();
+  const initialCategory = isSemanticCategorySupported(semanticState.category)
+    ? semanticState.category
+    : getDefaultSemanticCategory();
+  semanticState.category = initialCategory;
+
   categorySelect.innerHTML = '';
-  getSemanticCategoryOptions().forEach(value => {
+  categoryItems.forEach(item => {
     const option = document.createElement('option');
-    option.value = value;
-    option.textContent = getSemanticCategoryLabel(value);
+    option.value = item.value;
+    option.textContent = item.supported ? item.label : `${item.label}（暂未支持）`;
+    option.disabled = !item.supported;
     categorySelect.appendChild(option);
   });
-  categorySelect.value = semanticState.category;
+  categorySelect.value = initialCategory;
+  if (categorySelect.value !== initialCategory) {
+    const fallbackCategory = getSemanticCategoryOptions()[0] || categoryItems[0]?.value || initialCategory;
+    categorySelect.value = fallbackCategory;
+    semanticState.category = fallbackCategory;
+  }
 
   semanticState.model = readStoredSemanticModel();
   if (modelSelect) {
@@ -1926,6 +1983,11 @@ function initializeSemanticUI() {
 
   categorySelect.addEventListener('change', event => {
     const nextCategory = event.target.value;
+    if (!isSemanticCategorySupported(nextCategory)) {
+      alert(getSemanticUnsupportedCategoryMessage(nextCategory));
+      event.target.value = semanticState.category;
+      return;
+    }
     const categoryChanged = semanticState.loadedCategory && semanticState.loadedCategory !== nextCategory;
     const hasDirtyItems = semanticState.items.some(item => item.status === 'dirty');
 
@@ -2291,6 +2353,10 @@ function startSemanticTagging() {
     alert('请填写输入目录');
     return;
   }
+  if (!isSemanticCategorySupported(category)) {
+    alert(getSemanticUnsupportedCategoryMessage(category));
+    return;
+  }
   if (!Number.isFinite(maxRetries) || maxRetries < 0) {
     alert('重试次数必须是大于等于 0 的整数');
     return;
@@ -2396,6 +2462,10 @@ function loadSemanticResults(options = {}) {
   const category = document.getElementById('sem-category').value;
   if (!inputDir) {
     alert('请填写输入目录');
+    return;
+  }
+  if (!isSemanticCategorySupported(category)) {
+    alert(getSemanticUnsupportedCategoryMessage(category));
     return;
   }
 
@@ -2709,6 +2779,8 @@ function startClassify() {
   const inputDir = document.getElementById('cl-input-dir').value.trim();
   const outputDir = document.getElementById('cl-output-dir').value.trim();
   const threshold = parseInt(document.getElementById('cl-threshold').value, 10) / 100;
+  const autoRetryUncertain = document.getElementById('cl-auto-retry-uncertain').checked;
+  const thresholdStep = parseFloat(document.getElementById('cl-threshold-step').value) / 100;
   const categories = getCategoriesFromUI();
   if (!inputDir || !outputDir) {
     alert('请填写输入和输出文件夹路径');
@@ -2716,6 +2788,10 @@ function startClassify() {
   }
   if (categories.length === 0) {
     alert('请至少添加一个分类');
+    return;
+  }
+  if (!Number.isFinite(thresholdStep) || thresholdStep <= 0 || thresholdStep > 1) {
+    alert('每轮降幅必须大于 0 且不超过 100');
     return;
   }
   setClProcessing(true);
@@ -2726,7 +2802,14 @@ function startClassify() {
   fetch('/classify/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ input_dir: inputDir, output_dir: outputDir, threshold, categories }),
+    body: JSON.stringify({
+      input_dir: inputDir,
+      output_dir: outputDir,
+      threshold,
+      auto_retry_uncertain: autoRetryUncertain,
+      threshold_step: thresholdStep,
+      categories,
+    }),
   })
     .then(r => r.json())
     .then(d => {
@@ -2747,21 +2830,41 @@ function listenClassify() {
     if (msg.type === 'ping') return;
     if (msg.type === 'start') {
       clLog(`发现 ${msg.total} 张图片，开始分类...`, 'text-gray-500');
+      clLog(
+        `自动继续处理 uncertain：${msg.auto_retry_uncertain ? '开启' : '关闭'} · 每轮降幅：${(Number(msg.threshold_step || 0) * 100).toFixed(0)}%`,
+        'text-gray-500',
+      );
+      setClProgress(0, msg.total);
+    }
+    if (msg.type === 'pass_start') {
+      const scopeLabel = msg.scope === 'uncertain' ? '处理 uncertain' : '全量分类';
+      clLog(
+        `第 ${msg.pass_index} 轮 · ${scopeLabel} · 阈值 ${(Number(msg.threshold || 0) * 100).toFixed(0)}% · 共 ${msg.total} 张`,
+        'text-sky-300',
+      );
       setClProgress(0, msg.total);
     }
     if (msg.type === 'log') clLog(msg.message, 'text-gray-500');
     if (msg.type === 'progress') {
       setClProgress(msg.current, msg.total);
-      updateCatStats(msg.category, msg.stats);
+      updateCatStats(msg.stats);
       const conf = (msg.confidence * 100).toFixed(0);
       const color = msg.category === 'uncertain' ? 'text-yellow-500' : 'text-violet-400';
-      clLog(`→  ${msg.file}  →  ${msg.category}  (${conf}%)`, color);
+      clLog(`第 ${msg.pass_index} 轮 · ${msg.file}  →  ${msg.category}  (${conf}%)`, color);
     }
-    if (msg.type === 'error_item') clLog(`✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+    if (msg.type === 'error_item') clLog(`第 ${msg.pass_index} 轮 · ✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+    if (msg.type === 'pass_done') {
+      updateCatStats(msg.stats);
+      clLog(
+        `第 ${msg.pass_index} 轮结束 · 剩余 uncertain ${msg.remaining_uncertain} 张`,
+        msg.remaining_uncertain > 0 ? 'text-yellow-400' : 'text-emerald-400',
+      );
+    }
     if (msg.type === 'done') {
       clLog('────────────────────────────────────────', 'text-gray-700');
       const entries = Object.entries(msg.stats).map(([k, v]) => `${k}: ${v}`).join('  ');
-      clLog(`完成 · ${entries}`, 'text-white');
+      updateCatStats(msg.stats);
+      clLog(`完成 · 共 ${msg.passes || 1} 轮 · ${entries}`, 'text-white');
       setStatus('完成', 'bg-green-900 text-green-400');
       setClProcessing(false);
       clEventSource.close();
@@ -2775,17 +2878,27 @@ function listenClassify() {
   };
 }
 
-function updateCatStats(category, stats) {
+function updateCatStats(stats) {
   const container = document.getElementById('cl-cat-stats');
-  let badge = document.getElementById(`cat-badge-${category}`);
-  if (!badge) {
-    badge = document.createElement('span');
-    badge.id = `cat-badge-${category}`;
-    const color = category === 'uncertain' ? 'bg-yellow-900 text-yellow-300' : 'bg-violet-900 text-violet-300';
+  const nextStats = stats && typeof stats === 'object' ? stats : {};
+  const preferredOrder = [...getCategoriesFromUI().map(item => item.name), 'uncertain', 'error'];
+  const orderedCategories = [...new Set([...preferredOrder, ...Object.keys(nextStats)])];
+
+  container.innerHTML = '';
+  orderedCategories.forEach(category => {
+    const count = Number(nextStats[category] || 0);
+    if (!count) return;
+
+    const badge = document.createElement('span');
+    const color = category === 'uncertain'
+      ? 'bg-yellow-900 text-yellow-300'
+      : category === 'error'
+        ? 'bg-red-900 text-red-300'
+        : 'bg-violet-900 text-violet-300';
     badge.className = `log-item ${color} text-xs px-2.5 py-1 rounded-full font-mono`;
+    badge.textContent = `${category}: ${count}`;
     container.appendChild(badge);
-  }
-  badge.textContent = `${category}: ${stats[category] || 0}`;
+  });
 }
 
 function setClProgress(current, total) {
@@ -2796,7 +2909,13 @@ function setClProgress(current, total) {
 
 function setClProcessing(active) {
   const btn = document.getElementById('cl-start-btn');
+  const thresholdInput = document.getElementById('cl-threshold');
+  const autoRetryCheckbox = document.getElementById('cl-auto-retry-uncertain');
+  const thresholdStepInput = document.getElementById('cl-threshold-step');
   btn.disabled = active;
+  thresholdInput.disabled = active;
+  autoRetryCheckbox.disabled = active;
+  thresholdStepInput.disabled = active;
   btn.querySelector('span').textContent = active ? '分类中...' : '开始分类';
   if (active) setStatus('分类中', 'bg-violet-900 text-violet-300');
   else if (document.getElementById('status-badge').textContent === '分类中') setStatus('空闲', 'bg-gray-800 text-gray-400');
