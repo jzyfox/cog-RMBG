@@ -429,7 +429,7 @@
   </div>
 
 <div id="panel-bundle" class="hidden flex flex-col gap-5">
-    <div class="grid grid-cols-1 xl:grid-cols-[440px_minmax(0,1fr)] gap-5 items-start">
+    <div class="grid grid-cols-1 xl:grid-cols-[26rem_minmax(0,1fr)] gap-5 items-start">
       <div class="flex flex-col gap-5 min-w-0">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
           <div class="flex items-center justify-between gap-3 flex-wrap">
@@ -441,7 +441,7 @@
               <label class="text-sm text-gray-300">输入目录</label>
               <input id="bundle-input-dir" type="text" placeholder="例如：J:/classified_assets" />
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div class="flex flex-col gap-1.5">
                 <label class="text-sm text-gray-300">目标数量</label>
                 <input id="bundle-target-count" type="number" min="1" step="1" value="{{ default_bundle_target_count }}" />
@@ -449,6 +449,10 @@
               <div class="flex flex-col gap-1.5">
                 <label class="text-sm text-gray-300">种子候选数</label>
                 <input id="bundle-seed-count" type="number" min="1" step="1" value="{{ default_seed_candidate_count }}" />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label class="text-sm text-gray-300">生成策略</label>
+                <select id="bundle-generation-strategy"></select>
               </div>
             </div>
           </div>
@@ -483,7 +487,9 @@
           <div id="bundle-result-path" class="text-xs text-gray-500 break-all min-h-[1rem]"></div>
           <div id="bundle-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-52 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
         </div>
+      </div>
 
+      <div class="grid grid-cols-1 gap-5 min-w-0 2xl:grid-cols-[28rem_minmax(0,1fr)] items-start">
         <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
           <div class="flex items-center justify-between gap-3 flex-wrap">
             <div>
@@ -494,6 +500,11 @@
               <label class="text-sm text-gray-300" for="bundle-pool-category">图片池筛选</label>
               <select id="bundle-pool-category" class="w-[180px]"></select>
             </div>
+          </div>
+
+          <div id="bundle-replace-banner" class="hidden rounded-2xl border border-amber-800 bg-amber-950/20 px-4 py-3 flex items-center justify-between gap-3">
+            <div id="bundle-replace-banner-text" class="text-sm text-amber-100 min-w-0 break-words"></div>
+            <button id="bundle-replace-cancel-btn" type="button" onclick="clearBundleReplaceTarget()" class="shrink-0 text-xs text-amber-200 hover:text-amber-100 px-3 py-2 rounded-lg border border-amber-800 hover:border-amber-600 transition disabled:opacity-50 disabled:cursor-not-allowed">退出替换模式</button>
           </div>
 
           <div id="bundle-seed-slot" class="rounded-2xl border-2 border-dashed border-cyan-800 bg-cyan-950/10 px-4 py-5 flex flex-col gap-3 text-sm text-gray-300">
@@ -508,58 +519,60 @@
 
           <div id="bundle-pool-list" class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[760px] overflow-y-auto pr-1"></div>
         </div>
-      </div>
 
-      <div id="bundle-review-card" class="min-w-0 bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
-        <div class="flex items-center justify-between gap-3 flex-wrap">
-          <div>
-            <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">候选复核</h2>
-            <div id="bundle-review-summary" class="text-sm text-gray-400 mt-1">尚未加载任何候选套餐</div>
-          </div>
-          <div class="flex gap-2 flex-wrap">
-            <button id="bundle-accept-btn" onclick="updateCurrentBundleStatus('accepted')" class="text-xs text-emerald-300 hover:text-emerald-200 px-3 py-2 rounded-lg border border-emerald-900 hover:border-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed">接受当前套餐</button>
-            <button id="bundle-reject-btn" onclick="updateCurrentBundleStatus('rejected')" class="text-xs text-rose-300 hover:text-rose-200 px-3 py-2 rounded-lg border border-rose-900 hover:border-rose-700 transition disabled:opacity-50 disabled:cursor-not-allowed">拒绝当前套餐</button>
-            <button id="bundle-regenerate-btn" onclick="regenerateCurrentBundle()" class="text-xs text-cyan-300 hover:text-cyan-200 px-3 py-2 rounded-lg border border-cyan-900 hover:border-cyan-700 transition disabled:opacity-50 disabled:cursor-not-allowed">重新生成当前套餐</button>
-            <button id="bundle-delete-btn" onclick="deleteCurrentBundle()" class="text-xs text-amber-300 hover:text-amber-200 px-3 py-2 rounded-lg border border-amber-900 hover:border-amber-700 transition disabled:opacity-50 disabled:cursor-not-allowed">删除当前套餐</button>
-          </div>
-        </div>
-
-        <div class="flex gap-3 flex-wrap items-end">
-          <div class="flex-1 min-w-[240px]">
-            <label class="text-sm text-gray-300">批量渲染输出目录</label>
-            <input id="bundle-output-dir" type="text" placeholder="例如：J:/bundle_outputs" />
-          </div>
-          <button id="bundle-render-btn" onclick="renderAcceptedBundles()" class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-5 py-3 text-sm transition">批量渲染已接受套餐</button>
-        </div>
-
-        <div class="grid grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)] gap-4">
-          <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
-            <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">候选列表</div>
-            <div id="bundle-list" class="flex flex-col gap-2 max-h-[760px] overflow-y-auto"></div>
+        <div id="bundle-review-card" class="min-w-0 bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">候选复核</h2>
+              <div id="bundle-review-summary" class="text-sm text-gray-400 mt-1">尚未加载任何候选套餐</div>
+            </div>
+            <div class="flex gap-2 flex-wrap">
+              <button id="bundle-accept-btn" onclick="updateCurrentBundleStatus('accepted')" class="text-xs text-emerald-300 hover:text-emerald-200 px-3 py-2 rounded-lg border border-emerald-900 hover:border-emerald-700 transition disabled:opacity-50 disabled:cursor-not-allowed">接受当前套餐</button>
+              <button id="bundle-reject-btn" onclick="updateCurrentBundleStatus('rejected')" class="text-xs text-rose-300 hover:text-rose-200 px-3 py-2 rounded-lg border border-rose-900 hover:border-rose-700 transition disabled:opacity-50 disabled:cursor-not-allowed">拒绝当前套餐</button>
+              <button id="bundle-regenerate-btn" onclick="regenerateCurrentBundle()" class="text-xs text-cyan-300 hover:text-cyan-200 px-3 py-2 rounded-lg border border-cyan-900 hover:border-cyan-700 transition disabled:opacity-50 disabled:cursor-not-allowed">重新生成当前套餐</button>
+              <button id="bundle-delete-btn" onclick="deleteCurrentBundle()" class="text-xs text-amber-300 hover:text-amber-200 px-3 py-2 rounded-lg border border-amber-900 hover:border-amber-700 transition disabled:opacity-50 disabled:cursor-not-allowed">删除当前套餐</button>
+              <button id="bundle-delete-all-btn" onclick="deleteAllBundles()" class="text-xs text-orange-300 hover:text-orange-200 px-3 py-2 rounded-lg border border-orange-900 hover:border-orange-700 transition disabled:opacity-50 disabled:cursor-not-allowed">删除当前所有套餐</button>
+            </div>
           </div>
 
-          <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-4">
-            <div id="bundle-empty-selection" class="text-sm text-gray-500">请先加载或生成候选套餐，然后选择一套查看详情。</div>
-            <div id="bundle-detail" class="hidden flex flex-col gap-4">
-              <div class="grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4 items-start">
-                <div class="min-w-0 flex flex-col gap-3">
-                  <div class="rounded-2xl overflow-hidden border border-gray-800 bg-white min-h-[260px] flex items-center justify-center">
-                    <img id="bundle-preview-image" src="" alt="bundle preview" class="max-h-[420px] w-full object-contain" />
+          <div class="flex gap-3 flex-wrap items-end">
+            <div class="flex-1 min-w-[240px]">
+              <label class="text-sm text-gray-300">批量渲染输出目录</label>
+              <input id="bundle-output-dir" type="text" placeholder="例如：J:/bundle_outputs" />
+            </div>
+            <button id="bundle-render-btn" onclick="renderAcceptedBundles()" class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-5 py-3 text-sm transition">批量渲染已接受套餐</button>
+          </div>
+
+          <div class="grid grid-cols-1 xl:grid-cols-[320px_minmax(0,1fr)] gap-4">
+            <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
+              <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">候选列表</div>
+              <div id="bundle-list" class="flex flex-col gap-2 max-h-[760px] overflow-y-auto"></div>
+            </div>
+
+            <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-4">
+              <div id="bundle-empty-selection" class="text-sm text-gray-500">请先加载或生成候选套餐，然后选择一套查看详情。</div>
+              <div id="bundle-detail" class="hidden flex flex-col gap-4">
+                <div class="grid grid-cols-1 xl:grid-cols-[360px_minmax(0,1fr)] gap-4 items-start">
+                  <div class="min-w-0 flex flex-col gap-3">
+                    <div class="rounded-2xl overflow-hidden border border-gray-800 bg-white min-h-[260px] flex items-center justify-center">
+                      <img id="bundle-preview-image" src="" alt="bundle preview" class="max-h-[420px] w-full object-contain" />
+                    </div>
+                    <div id="bundle-selected-meta" class="rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2 text-xs text-gray-500 break-all"></div>
                   </div>
-                  <div id="bundle-selected-meta" class="rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2 text-xs text-gray-500 break-all"></div>
-                </div>
 
-                <div class="min-w-0 flex flex-col gap-4">
-                  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div class="bg-gray-900 rounded-xl p-3"><div class="text-xs text-gray-500">模式</div><div id="bundle-detail-mode" class="text-sm text-gray-100 mt-1"></div></div>
-                    <div class="bg-gray-900 rounded-xl p-3"><div class="text-xs text-gray-500">状态</div><div id="bundle-detail-status" class="text-sm text-gray-100 mt-1"></div></div>
-                    <div class="bg-gray-900 rounded-xl p-3"><div class="text-xs text-gray-500">分数</div><div id="bundle-detail-score" class="text-sm text-gray-100 mt-1"></div></div>
+                  <div class="min-w-0 flex flex-col gap-4">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div class="bg-gray-900 rounded-xl p-3"><div class="text-xs text-gray-500">模式</div><div id="bundle-detail-mode" class="text-sm text-gray-100 mt-1"></div></div>
+                      <div class="bg-gray-900 rounded-xl p-3"><div class="text-xs text-gray-500">状态</div><div id="bundle-detail-status" class="text-sm text-gray-100 mt-1"></div></div>
+                      <div class="bg-gray-900 rounded-xl p-3"><div class="text-xs text-gray-500">分数</div><div id="bundle-detail-score" class="text-sm text-gray-100 mt-1"></div></div>
+                    </div>
+                    <div class="bg-gray-900 rounded-xl p-3">
+                      <div class="text-xs text-gray-500">锚点</div>
+                      <div id="bundle-detail-anchor" class="text-sm text-gray-100 mt-1 break-all"></div>
+                    </div>
+                    <div id="bundle-replace-detail-tip" class="hidden rounded-xl border border-cyan-800 bg-cyan-950/10 px-3 py-2 text-xs text-cyan-100 break-words"></div>
+                    <div id="bundle-item-grid" class="grid grid-cols-1 gap-3"></div>
                   </div>
-                  <div class="bg-gray-900 rounded-xl p-3">
-                    <div class="text-xs text-gray-500">锚点</div>
-                    <div id="bundle-detail-anchor" class="text-sm text-gray-100 mt-1 break-all"></div>
-                  </div>
-                  <div id="bundle-item-grid" class="grid grid-cols-1 gap-3"></div>
                 </div>
               </div>
             </div>
@@ -737,7 +750,7 @@ function switchTab(tab) {
     document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== tab);
     document.getElementById(`tab-${name}-btn`).classList.toggle('active', name === tab);
   });
-  if (appMain) appMain.style.maxWidth = tab === 'bundle' ? '110rem' : '';
+  if (appMain) appMain.style.maxWidth = tab === 'bundle' ? '128rem' : '';
   if (tab === 'catalog') requestAnimationFrame(renderCatalogEditor);
   if (tab === 'semantic') requestAnimationFrame(renderSemanticReviewPanel);
   if (tab === 'bundle') requestAnimationFrame(renderBundlePanel);
@@ -3746,13 +3759,22 @@ function setCgProcessing(active) {
 function cgLog(text, cls) { addLog('cg-log', text, cls); }
 
 let bundleEventSource = null;
+const BUNDLE_POOL_DRAG_MIME = 'application/x-bundle-pool-image-path';
 const bundleState = {
   inputDir: '',
   poolCategory: 'all',
   poolItems: [],
+  poolTotal: 0,
   seedImagePath: null,
+  seedItem: null,
   bundles: [],
   selectedBundleId: null,
+  replaceTargetBundleId: null,
+  replaceTargetCategory: '',
+  replaceTargetImagePath: '',
+  replacePending: false,
+  draggingPoolImagePath: '',
+  draggingPoolCategory: '',
   previewObjectUrl: null,
   previewBundleId: null,
 };
@@ -3764,6 +3786,15 @@ function getBundleCategories() {
 function getBundleCategoryLabel(category) {
   const normalized = String(category || '').trim();
   return (DEFAULT_BUNDLE_CONFIG.category_labels || {})[normalized] || normalized || '-';
+}
+
+function getBundleGenerationStrategyOptions() {
+  return Array.isArray(DEFAULT_BUNDLE_CONFIG.generation_strategy_options) ? DEFAULT_BUNDLE_CONFIG.generation_strategy_options : [];
+}
+
+function getBundleGenerationStrategyLabel(value) {
+  const normalized = String(value || '').trim();
+  return (DEFAULT_BUNDLE_CONFIG.generation_strategy_labels || {})[normalized] || normalized || '-';
 }
 
 function getBundleImagePreviewUrl(path) {
@@ -3792,6 +3823,26 @@ function normalizeBundleItem(item = {}) {
   };
 }
 
+function normalizeBundlePoolItem(item = {}) {
+  const semanticTag = item.semantic_tag || {};
+  return {
+    image_path: String(item.image_path || item.source_image_path || '').trim(),
+    file_name: String(item.file_name || semanticTag.file_name || '').trim(),
+    relative_path: String(item.relative_path || semanticTag.relative_path || '').trim(),
+    package_name: String(item.package_name || semanticTag.package_name || '').trim(),
+    category: String(item.category || semanticTag.category || '').trim(),
+    primary_style: String(item.primary_style || semanticTag.primary_style || '').trim(),
+    secondary_style: String(item.secondary_style || semanticTag.secondary_style || '').trim(),
+    color_family: String(item.color_family || semanticTag.color_family || '').trim(),
+    color_brightness: String(item.color_brightness || semanticTag.color_brightness || '').trim(),
+    main_material: String(item.main_material || semanticTag.main_material || '').trim(),
+    secondary_materials: Array.isArray(item.secondary_materials)
+      ? item.secondary_materials.map(value => String(value || '').trim()).filter(Boolean)
+      : [],
+    semantic_tag: semanticTag,
+  };
+}
+
 function normalizeBundleRecord(bundle = {}) {
   return {
     bundle_id: String(bundle.bundle_id || ''),
@@ -3810,6 +3861,134 @@ function normalizeBundleRecord(bundle = {}) {
 
 function getSelectedBundle() {
   return bundleState.bundles.find(bundle => bundle.bundle_id === bundleState.selectedBundleId) || null;
+}
+
+function getBundlePoolItemByPath(imagePath) {
+  const normalizedPath = String(imagePath || '').trim();
+  if (!normalizedPath) return null;
+  return bundleState.poolItems.find(item => item.image_path === normalizedPath)
+    || (bundleState.seedItem && bundleState.seedItem.image_path === normalizedPath ? bundleState.seedItem : null);
+}
+
+function isBundleReplaceMode() {
+  return Boolean(bundleState.replaceTargetBundleId && bundleState.replaceTargetCategory);
+}
+
+function clearBundleDraggedPoolItem() {
+  bundleState.draggingPoolImagePath = '';
+  bundleState.draggingPoolCategory = '';
+}
+
+function isBundleItemLocked(bundle, category) {
+  return Boolean(bundle && Array.isArray(bundle.locked_categories) && bundle.locked_categories.includes(category));
+}
+
+function isBundleItemReplaceable(bundle, category) {
+  return Boolean(bundle && category && !isBundleItemLocked(bundle, category));
+}
+
+function syncBundleReplaceTargetState() {
+  const bundle = getSelectedBundle();
+  if (!bundle || bundle.bundle_id !== bundleState.replaceTargetBundleId || !bundleState.replaceTargetCategory) {
+    bundleState.replaceTargetBundleId = null;
+    bundleState.replaceTargetCategory = '';
+    bundleState.replaceTargetImagePath = '';
+    return;
+  }
+  const targetItem = bundle.items.find(item => item.category === bundleState.replaceTargetCategory) || null;
+  if (!targetItem || !isBundleItemReplaceable(bundle, bundleState.replaceTargetCategory)) {
+    bundleState.replaceTargetBundleId = null;
+    bundleState.replaceTargetCategory = '';
+    bundleState.replaceTargetImagePath = '';
+    return;
+  }
+  bundleState.replaceTargetImagePath = targetItem.image_path;
+}
+
+function updateBundlePoolSummary() {
+  const summary = document.getElementById('bundle-pool-summary');
+  if (!summary) return;
+  if (!bundleState.inputDir) {
+    summary.textContent = '拖入一张已打标图片作为种子，系统会自动补齐剩余 6 类。';
+    return;
+  }
+
+  const total = bundleState.poolTotal || bundleState.poolItems.length || 0;
+  const categoryLabel = bundleState.poolCategory === 'all'
+    ? '全部品类'
+    : getBundleCategoryLabel(bundleState.poolCategory);
+  let text = `图片池共 ${total} 张 · 当前筛选 ${categoryLabel}`;
+  if (isBundleReplaceMode()) {
+    text += ` · 当前替换 ${getBundleCategoryLabel(bundleState.replaceTargetCategory)}，请拖拽同品类图片到右侧目标卡片`;
+  }
+  summary.textContent = text;
+}
+
+function renderBundleReplaceStatus() {
+  const banner = document.getElementById('bundle-replace-banner');
+  const bannerText = document.getElementById('bundle-replace-banner-text');
+  const detailTip = document.getElementById('bundle-replace-detail-tip');
+  if (!banner || !bannerText || !detailTip) return;
+
+  if (!isBundleReplaceMode()) {
+    banner.classList.add('hidden');
+    bannerText.textContent = '';
+    detailTip.classList.add('hidden');
+    detailTip.textContent = '';
+    return;
+  }
+
+  const bundle = getSelectedBundle();
+  const targetItem = bundle?.items.find(item => item.category === bundleState.replaceTargetCategory) || null;
+  const fileName = targetItem?.file_name || (String(bundleState.replaceTargetImagePath || '').split(/[\\/]/).pop() || '-');
+  const categoryLabel = getBundleCategoryLabel(bundleState.replaceTargetCategory);
+  const message = `当前正在替换 ${categoryLabel}：${fileName}。请从左侧图片池拖拽同品类图片到右侧目标卡片。`;
+  banner.classList.remove('hidden');
+  bannerText.textContent = message;
+  detailTip.classList.remove('hidden');
+  detailTip.textContent = `${categoryLabel} 已进入替换模式。点击其他可替换单品可切换目标，或把左侧同品类图片直接拖到当前目标卡片。`;
+}
+
+function clearBundleReplaceTarget(options = {}) {
+  bundleState.replaceTargetBundleId = null;
+  bundleState.replaceTargetCategory = '';
+  bundleState.replaceTargetImagePath = '';
+  if (options.render !== false) {
+    renderBundlePanel();
+  }
+}
+
+function selectBundleReplaceTarget(bundleId, category, imagePath) {
+  if (bundleState.replacePending) return;
+  const bundle = bundleState.bundles.find(item => item.bundle_id === bundleId) || null;
+  if (!bundle) return;
+  if (!isBundleItemReplaceable(bundle, category)) {
+    bundleLog(`${getBundleCategoryLabel(category)} 是锁定槽位，当前套餐不可替换。`, 'text-amber-300');
+    return;
+  }
+
+  bundleState.selectedBundleId = bundleId;
+  bundleState.replaceTargetBundleId = bundleId;
+  bundleState.replaceTargetCategory = category;
+  bundleState.replaceTargetImagePath = imagePath;
+  const categorySelect = document.getElementById('bundle-pool-category');
+  if (categorySelect) {
+    categorySelect.value = category;
+  }
+  bundleState.poolCategory = category;
+  renderBundlePanel();
+  loadBundlePool({ silent: true });
+}
+
+function getBundleDraggedImagePath(event) {
+  return event.dataTransfer.getData(BUNDLE_POOL_DRAG_MIME) || event.dataTransfer.getData('text/plain') || '';
+}
+
+function canDropBundlePoolItemOnTarget(bundle, item) {
+  if (bundleState.replacePending || !isBundleReplaceMode()) return false;
+  if (!bundle || bundle.bundle_id !== bundleState.replaceTargetBundleId) return false;
+  if (!item || item.category !== bundleState.replaceTargetCategory) return false;
+  return bundleState.draggingPoolCategory === item.category;
 }
 
 function setBundleProgress(current, total) {
@@ -3834,12 +4013,20 @@ function clearBundlePreview() {
 
 function syncBundleActionButtons() {
   const hasSelectedBundle = Boolean(getSelectedBundle());
-  const processing = Boolean(document.getElementById('bundle-start-btn')?.disabled);
+  const processing = Boolean(document.getElementById('bundle-start-btn')?.disabled) || bundleState.replacePending;
   ['bundle-accept-btn', 'bundle-reject-btn', 'bundle-regenerate-btn', 'bundle-delete-btn'].forEach(id => {
     const button = document.getElementById(id);
     if (!button) return;
     button.disabled = processing || !hasSelectedBundle;
   });
+  const deleteAllButton = document.getElementById('bundle-delete-all-btn');
+  if (deleteAllButton) {
+    deleteAllButton.disabled = processing;
+  }
+  const replaceCancelButton = document.getElementById('bundle-replace-cancel-btn');
+  if (replaceCancelButton) {
+    replaceCancelButton.disabled = processing || !isBundleReplaceMode();
+  }
 }
 
 function setBundleProcessing(active) {
@@ -3848,6 +4035,7 @@ function setBundleProcessing(active) {
   document.getElementById('bundle-pool-load-btn').disabled = active;
   document.getElementById('bundle-input-dir').disabled = active;
   document.getElementById('bundle-target-count').disabled = active;
+  document.getElementById('bundle-generation-strategy').disabled = active;
   document.getElementById('bundle-start-btn').querySelector('span').textContent = active ? '正在自动生成...' : '开始自动生成';
   syncBundleActionButtons();
   if (active) setStatus('组套生成中', 'bg-cyan-900 text-cyan-300');
@@ -3873,7 +4061,7 @@ function syncBundleStats(stats = null) {
 function renderBundleSeedCard() {
   const empty = document.getElementById('bundle-seed-empty');
   const card = document.getElementById('bundle-seed-card');
-  const item = bundleState.poolItems.find(entry => entry.image_path === bundleState.seedImagePath) || null;
+  const item = getBundlePoolItemByPath(bundleState.seedImagePath);
   if (!item) {
     empty.classList.remove('hidden');
     card.classList.add('hidden');
@@ -3898,11 +4086,16 @@ function renderBundleSeedCard() {
 
 function clearBundleSeed() {
   bundleState.seedImagePath = null;
+  bundleState.seedItem = null;
   renderBundleSeedCard();
 }
 
 function selectBundleSeed(imagePath) {
   bundleState.seedImagePath = imagePath;
+  const item = getBundlePoolItemByPath(imagePath);
+  if (item) {
+    bundleState.seedItem = { ...item };
+  }
   renderBundleSeedCard();
 }
 
@@ -3910,7 +4103,7 @@ function renderBundlePool() {
   const list = document.getElementById('bundle-pool-list');
   list.innerHTML = '';
   if (!bundleState.poolItems.length) {
-    list.innerHTML = '<div class="text-sm text-gray-500">当前目录下还没有可作为种子的已打标图片。</div>';
+    list.innerHTML = `<div class="text-sm text-gray-500">${isBundleReplaceMode() ? '当前筛选品类下还没有可用于替换的已打标图片。' : '当前目录下还没有可作为种子的已打标图片。'}</div>`;
     return;
   }
 
@@ -3932,10 +4125,22 @@ function renderBundlePool() {
         </div>
       </div>
     `;
-    button.addEventListener('click', () => selectBundleSeed(item.image_path));
+    button.addEventListener('click', () => {
+      if (isBundleReplaceMode()) {
+        bundleLog('当前处于单品替换模式，请把左侧图片拖拽到右侧目标卡片；如需恢复种子交互，请先退出替换模式。', 'text-amber-300');
+        return;
+      }
+      selectBundleSeed(item.image_path);
+    });
     button.addEventListener('dragstart', event => {
+      bundleState.draggingPoolImagePath = item.image_path;
+      bundleState.draggingPoolCategory = item.category;
+      event.dataTransfer.setData(BUNDLE_POOL_DRAG_MIME, item.image_path);
       event.dataTransfer.setData('text/plain', item.image_path);
       event.dataTransfer.effectAllowed = 'copy';
+    });
+    button.addEventListener('dragend', () => {
+      clearBundleDraggedPoolItem();
     });
     list.appendChild(button);
   });
@@ -3996,21 +4201,70 @@ function renderBundleDetail() {
   grid.innerHTML = '';
   bundle.items.forEach(item => {
     const semanticTag = item.semantic_tag || {};
-    const card = document.createElement('div');
-    card.className = 'min-w-0 rounded-2xl border border-gray-800 bg-gray-900 p-3';
+    const locked = isBundleItemLocked(bundle, item.category);
+    const selectedForReplace = bundle.bundle_id === bundleState.replaceTargetBundleId
+      && item.category === bundleState.replaceTargetCategory;
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = `min-w-0 rounded-2xl border p-3 text-left transition ${
+      selectedForReplace
+        ? 'border-cyan-500 bg-cyan-950/20 shadow-[0_0_0_1px_rgba(6,182,212,0.25)]'
+        : locked
+          ? 'border-gray-800 bg-gray-950/60'
+          : 'border-gray-800 bg-gray-900 hover:border-cyan-700'
+    }`;
     card.innerHTML = `
-      <div class="flex items-start gap-3">
-        <div class="w-16 h-16 rounded-xl bg-white border border-gray-800 overflow-hidden shrink-0 flex items-center justify-center">
-          <img src="${escHtml(getBundleImagePreviewUrl(item.image_path))}" alt="${escHtml(item.file_name)}" class="w-full h-full object-contain" />
-        </div>
-        <div class="min-w-0 flex-1">
-          <div class="text-xs text-cyan-300">${escHtml(getBundleCategoryLabel(item.category))}</div>
-          <div class="font-mono text-sm text-gray-100 break-all mt-1">${escHtml(item.file_name)}</div>
-          <div class="text-xs text-gray-500 mt-1 break-words">${escHtml(semanticTag.primary_style || '-')} / ${escHtml(semanticTag.color_family || '-')} / ${escHtml(semanticTag.main_material || '-')}</div>
-          <div class="text-[11px] text-gray-600 mt-1 break-all">${escHtml(item.relative_path || item.image_path)}</div>
+      <div class="flex items-start justify-between gap-3">
+        <div class="flex items-start gap-3 min-w-0 flex-1">
+          <div class="w-16 h-16 rounded-xl bg-white border border-gray-800 overflow-hidden shrink-0 flex items-center justify-center">
+            <img src="${escHtml(getBundleImagePreviewUrl(item.image_path))}" alt="${escHtml(item.file_name)}" class="w-full h-full object-contain" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <div class="text-xs text-cyan-300">${escHtml(getBundleCategoryLabel(item.category))}</div>
+              ${locked
+                ? '<span class="text-[10px] px-2 py-0.5 rounded-full border border-gray-700 bg-gray-950 text-gray-400">不可替换</span>'
+                : (selectedForReplace
+                    ? '<span class="text-[10px] px-2 py-0.5 rounded-full border border-cyan-700 bg-cyan-950/40 text-cyan-200">当前替换目标</span>'
+                    : '')}
+            </div>
+            <div class="font-mono text-sm text-gray-100 break-all mt-1">${escHtml(item.file_name)}</div>
+            <div class="text-xs text-gray-500 mt-1 break-words">${escHtml(semanticTag.primary_style || '-')} / ${escHtml(semanticTag.color_family || '-')} / ${escHtml(semanticTag.main_material || '-')}</div>
+            <div class="text-[11px] text-gray-600 mt-1 break-all">${escHtml(item.relative_path || item.image_path)}</div>
+            ${selectedForReplace
+              ? '<div class="text-[11px] mt-2 text-cyan-200">请从左侧图片池拖拽同品类图片到这里，替换会立即落盘并重置为 pending。</div>'
+              : ''}
+          </div>
         </div>
       </div>
     `;
+    card.addEventListener('click', () => {
+      if (locked) {
+        bundleLog(`${getBundleCategoryLabel(item.category)} 是锁定槽位，当前套餐不可替换。`, 'text-amber-300');
+        return;
+      }
+      selectBundleReplaceTarget(bundle.bundle_id, item.category, item.image_path);
+    });
+    if (selectedForReplace) {
+      card.addEventListener('dragover', event => {
+        if (!canDropBundlePoolItemOnTarget(bundle, item)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        card.classList.add('border-cyan-300');
+      });
+      card.addEventListener('dragleave', () => {
+        card.classList.remove('border-cyan-300');
+      });
+      card.addEventListener('drop', event => {
+        if (!canDropBundlePoolItemOnTarget(bundle, item)) return;
+        event.preventDefault();
+        card.classList.remove('border-cyan-300');
+        const replacementImagePath = getBundleDraggedImagePath(event);
+        clearBundleDraggedPoolItem();
+        if (!replacementImagePath) return;
+        replaceSelectedBundleItem(replacementImagePath);
+      });
+    }
     grid.appendChild(card);
   });
 
@@ -4018,11 +4272,14 @@ function renderBundleDetail() {
 }
 
 function renderBundlePanel() {
+  syncBundleReplaceTargetState();
   syncBundleStats();
+  updateBundlePoolSummary();
   renderBundleSeedCard();
   renderBundlePool();
   renderBundleList();
   renderBundleDetail();
+  renderBundleReplaceStatus();
   syncBundleActionButtons();
 }
 
@@ -4088,8 +4345,8 @@ function loadBundlePool(options = {}) {
     .then(d => {
       if (d.error) throw new Error(d.error);
       bundleState.poolCategory = category;
-      bundleState.poolItems = Array.isArray(d.items) ? d.items : [];
-      document.getElementById('bundle-pool-summary').textContent = `图片池共 ${d.stats?.total || bundleState.poolItems.length} 张 · 当前筛选 ${category === 'all' ? '全部品类' : getBundleCategoryLabel(category)}`;
+      bundleState.poolItems = Array.isArray(d.items) ? d.items.map(normalizeBundlePoolItem) : [];
+      bundleState.poolTotal = Number(d.stats?.total || bundleState.poolItems.length || 0);
       renderBundlePanel();
     })
     .catch(err => {
@@ -4123,6 +4380,7 @@ function loadBundleWorkspace(options = {}) {
 function startBundleGeneration() {
   const inputDir = document.getElementById('bundle-input-dir').value.trim();
   const targetCount = parseInt(document.getElementById('bundle-target-count').value, 10);
+  const generationStrategy = document.getElementById('bundle-generation-strategy').value;
   if (!inputDir) {
     alert('请填写输入目录');
     return;
@@ -4142,7 +4400,7 @@ function startBundleGeneration() {
   fetch('/bundle/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ input_dir: inputDir, target_count: targetCount }),
+    body: JSON.stringify({ input_dir: inputDir, target_count: targetCount, generation_strategy: generationStrategy }),
   })
     .then(r => r.json())
     .then(d => {
@@ -4165,11 +4423,24 @@ function listenBundle() {
     if (msg.type === 'start') {
       document.getElementById('bundle-result-path').textContent = `输入目录：${msg.input_dir}`;
       bundleLog(`开始自动组套，目标 ${msg.target_count} 套`, 'text-gray-400');
+      bundleLog(
+        `当前模式：${getBundleGenerationStrategyLabel(msg.generation_strategy)}${msg.run_seed ? ` · seed ${msg.run_seed}` : ''}`,
+        'text-gray-500',
+      );
+      if (Array.isArray(msg.anchor_categories) && msg.anchor_categories.length) {
+        bundleLog(`锚点品类：${msg.anchor_categories.map(getBundleCategoryLabel).join(' / ')}`, 'text-gray-500');
+      }
       setBundleProgress(0, msg.target_count || 0);
     }
     if (msg.type === 'progress') {
       setBundleProgress(msg.current, msg.total);
       bundleLog(`已生成 ${msg.bundle_id} · score ${Number(msg.score || 0).toFixed(2)}`, 'text-cyan-300');
+      if (msg.raw_score !== undefined || msg.diversity_penalty !== undefined || msg.adjusted_score !== undefined) {
+        bundleLog(
+          `原始分 ${Number(msg.raw_score || 0).toFixed(2)} · 多样性惩罚 ${Number(msg.diversity_penalty || 0).toFixed(2)} · 调整后 ${Number(msg.adjusted_score || 0).toFixed(2)} · 最多共享 ${Number(msg.max_shared_non_anchor_slots || 0)} 个非锚点槽位`,
+          'text-gray-500',
+        );
+      }
     }
     if (msg.type === 'done') {
       bundleLog(`完成，本轮新增 ${msg.generated_count} 套候选`, 'text-white');
@@ -4232,6 +4503,59 @@ function startSeedBundleGeneration() {
     })
     .finally(() => {
       document.getElementById('bundle-seed-start-btn').disabled = false;
+    });
+}
+
+function replaceSelectedBundleItem(replacementImagePath) {
+  const bundle = getSelectedBundle();
+  const inputDir = document.getElementById('bundle-input-dir').value.trim();
+  const targetCategory = bundleState.replaceTargetCategory;
+  if (bundleState.replacePending) return;
+  if (!bundle || !inputDir || !targetCategory || bundle.bundle_id !== bundleState.replaceTargetBundleId) {
+    alert('请先在右侧候选详情中选择一个可替换的单品。');
+    return;
+  }
+
+  bundleState.replacePending = true;
+  syncBundleActionButtons();
+
+  fetch('/bundle/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: inputDir,
+      action: 'replace_item',
+      bundle_id: bundle.bundle_id,
+      target_category: targetCategory,
+      replacement_image_path: replacementImagePath,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      const updated = normalizeBundleRecord(d.item || {});
+      bundleState.bundles = bundleState.bundles.map(item => item.bundle_id === updated.bundle_id ? updated : item);
+      bundleState.selectedBundleId = updated.bundle_id;
+      const updatedItem = updated.items.find(item => item.category === targetCategory) || null;
+      bundleState.replaceTargetBundleId = updated.bundle_id;
+      bundleState.replaceTargetCategory = targetCategory;
+      bundleState.replaceTargetImagePath = updatedItem?.image_path || '';
+      clearBundlePreview();
+      syncBundleStats(d.stats || null);
+      renderBundlePanel();
+      bundleLog(
+        `已将 ${updated.bundle_id} 的 ${getBundleCategoryLabel(targetCategory)} 替换为 ${updatedItem?.file_name || (String(replacementImagePath || '').split(/[\\\\/]/).pop() || '-')}`,
+        'text-cyan-300',
+      );
+    })
+    .catch(err => {
+      const message = err.message || '单品替换失败';
+      bundleLog(`替换失败：${message}`, 'text-red-400');
+      alert(message);
+    })
+    .finally(() => {
+      bundleState.replacePending = false;
+      syncBundleActionButtons();
     });
 }
 
@@ -4318,6 +4642,48 @@ function deleteCurrentBundle() {
     });
 }
 
+function deleteAllBundles() {
+  const inputDir = document.getElementById('bundle-input-dir').value.trim();
+  if (!inputDir) {
+    alert('请先填写输入目录');
+    return;
+  }
+
+  const confirmed = window.confirm('确定删除当前输入目录下的全部候选套餐吗？这会清空当前候选工作区，不区分 auto / seeded，也不区分 pending / accepted / rejected。');
+  if (!confirmed) return;
+
+  const deleteAllButton = document.getElementById('bundle-delete-all-btn');
+  const previousText = deleteAllButton ? deleteAllButton.textContent : '';
+  if (deleteAllButton) {
+    deleteAllButton.disabled = true;
+    deleteAllButton.textContent = '清空中...';
+  }
+
+  fetch('/bundle/review', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input_dir: inputDir,
+      action: 'delete_all',
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      applyBundleWorkspace([], d.stats || {});
+      bundleLog(`已清空当前候选工作区（删除 ${Number(d.deleted_count || 0)} 套）`, 'text-amber-300');
+    })
+    .catch(err => {
+      alert(err.message || '清空候选失败');
+    })
+    .finally(() => {
+      if (deleteAllButton) {
+        deleteAllButton.textContent = previousText || '删除当前所有套餐';
+      }
+      syncBundleActionButtons();
+    });
+}
+
 function regenerateCurrentBundle() {
   const bundle = getSelectedBundle();
   if (!bundle) {
@@ -4373,6 +4739,7 @@ function renderAcceptedBundles() {
 
 function initializeBundleUI() {
   const categorySelect = document.getElementById('bundle-pool-category');
+  const strategySelect = document.getElementById('bundle-generation-strategy');
   categorySelect.innerHTML = '<option value="all">全部品类</option>';
   getBundleCategories().forEach(category => {
     const option = document.createElement('option');
@@ -4380,10 +4747,19 @@ function initializeBundleUI() {
     option.textContent = getBundleCategoryLabel(category);
     categorySelect.appendChild(option);
   });
+  strategySelect.innerHTML = '';
+  getBundleGenerationStrategyOptions().forEach(strategy => {
+    const option = document.createElement('option');
+    option.value = strategy;
+    option.textContent = getBundleGenerationStrategyLabel(strategy);
+    strategySelect.appendChild(option);
+  });
+  strategySelect.value = DEFAULT_BUNDLE_CONFIG.default_generation_strategy || 'true_random';
   categorySelect.addEventListener('change', () => loadBundlePool({ silent: true }));
 
   const seedSlot = document.getElementById('bundle-seed-slot');
   seedSlot.addEventListener('dragover', event => {
+    if (isBundleReplaceMode() || bundleState.replacePending) return;
     event.preventDefault();
     seedSlot.classList.add('border-cyan-500');
   });
@@ -4393,7 +4769,13 @@ function initializeBundleUI() {
   seedSlot.addEventListener('drop', event => {
     event.preventDefault();
     seedSlot.classList.remove('border-cyan-500');
-    const imagePath = event.dataTransfer.getData('text/plain');
+    if (isBundleReplaceMode()) {
+      bundleLog('当前处于单品替换模式，请把左侧图片拖拽到右侧目标卡片；如需重新设置种子，请先退出替换模式。', 'text-amber-300');
+      clearBundleDraggedPoolItem();
+      return;
+    }
+    const imagePath = getBundleDraggedImagePath(event);
+    clearBundleDraggedPoolItem();
     if (!imagePath) return;
     selectBundleSeed(imagePath);
   });

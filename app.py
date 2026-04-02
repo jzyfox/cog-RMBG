@@ -27,13 +27,17 @@ from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_W
 from PIL import Image
 from semantic_bundle_builder import (
     BUNDLE_FRONTEND_CONFIG,
+    BUNDLE_GENERATION_STRATEGIES,
     DEFAULT_BUNDLE_TARGET_COUNT,
+    DEFAULT_BUNDLE_GENERATION_STRATEGY,
     DEFAULT_SEED_CANDIDATE_COUNT,
     build_bundle_candidates,
+    delete_all_bundle_candidates,
     delete_bundle_candidate,
     load_bundle_pool,
     load_bundle_review_data,
     regenerate_bundle_candidate,
+    replace_bundle_item,
     render_bundle_outputs,
     render_bundle_preview,
     save_bundle_review,
@@ -1330,6 +1334,7 @@ def start_bundle():
 
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
+    generation_strategy = str(data.get("generation_strategy", DEFAULT_BUNDLE_GENERATION_STRATEGY)).strip().lower()
 
     try:
         target_count = int(data.get("target_count", DEFAULT_BUNDLE_TARGET_COUNT))
@@ -1338,11 +1343,13 @@ def start_bundle():
 
     if not input_dir:
         return {"error": "请填写输入目录"}, 400
+    if generation_strategy not in BUNDLE_GENERATION_STRATEGIES:
+        return {"error": "生成策略不合法"}, 400
 
     _drain(_bundle_queue)
     threading.Thread(
         target=_run_bundle,
-        args=(input_dir, target_count),
+        args=(input_dir, target_count, generation_strategy),
         daemon=True,
     ).start()
     return {"status": "started"}
@@ -1431,6 +1438,24 @@ def bundle_review():
             if not bundle_id:
                 return {"error": "缺少 bundle_id"}, 400
             payload = delete_bundle_candidate(input_dir=input_dir, bundle_id=bundle_id)
+        elif action == "replace_item":
+            bundle_id = str(data.get("bundle_id", "")).strip()
+            target_category = str(data.get("target_category", "")).strip()
+            replacement_image_path = str(data.get("replacement_image_path", "")).strip()
+            if not bundle_id:
+                return {"error": "缺少 bundle_id"}, 400
+            if not target_category:
+                return {"error": "缺少 target_category"}, 400
+            if not replacement_image_path:
+                return {"error": "缺少 replacement_image_path"}, 400
+            payload = replace_bundle_item(
+                input_dir=input_dir,
+                bundle_id=bundle_id,
+                target_category=target_category,
+                replacement_image_path=replacement_image_path,
+            )
+        elif action == "delete_all":
+            payload = delete_all_bundle_candidates(input_dir=input_dir)
         else:
             payload = save_bundle_review(
                 input_dir=input_dir,
@@ -1883,6 +1908,7 @@ def _run_semantic(
 def _run_bundle(
     input_dir: str,
     target_count: int,
+    generation_strategy: str,
 ) -> None:
     global _bundle_processing
 
@@ -1894,6 +1920,7 @@ def _run_bundle(
         summary = build_bundle_candidates(
             input_dir=input_dir,
             target_count=target_count,
+            generation_strategy=generation_strategy,
             progress_callback=_emit,
         )
         _bundle_queue.put({"type": "done", **summary})

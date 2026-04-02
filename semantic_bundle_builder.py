@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,10 +32,15 @@ DEFAULT_BUNDLE_TARGET_COUNT = 100
 DEFAULT_SEED_CANDIDATE_COUNT = 8
 SEED_TOP_K = 12
 AUTO_TOP_K = 8
+AUTO_VARIANT_SELECTION_WINDOW = 8
 SEED_BEAM_WIDTH = 128
 AUTO_BEAM_WIDTH = 48
 SEED_NON_ANCHOR_MAX_APPEARANCES = 1
 SEED_MIN_NON_ANCHOR_SLOT_DIFFERENCE = 2
+AUTO_REPEAT_PENALTY_ANCHOR = 1.0
+AUTO_REPEAT_PENALTY_NON_ANCHOR = 1.5
+AUTO_REPEAT_NON_ANCHOR_THRESHOLD = 3
+AUTO_REPEAT_NON_ANCHOR_EXTRA_PENALTY = 2.0
 
 BUNDLE_CATEGORIES: tuple[str, ...] = (
     "sofa",
@@ -49,6 +55,8 @@ BUNDLE_CATEGORY_SET = set(BUNDLE_CATEGORIES)
 
 AUTO_ANCHOR_CATEGORY = "sofa"
 AUTO_CLUSTER_CAP_RATIO = 0.2
+BUNDLE_GENERATION_STRATEGIES = {"true_random", "pseudo_random"}
+DEFAULT_BUNDLE_GENERATION_STRATEGY = "true_random"
 REUSE_LIMITS = {
     "sofa": 2,
     "bed": 2,
@@ -69,6 +77,12 @@ BUNDLE_FRONTEND_CONFIG = {
     },
     "default_target_count": DEFAULT_BUNDLE_TARGET_COUNT,
     "default_seed_candidate_count": DEFAULT_SEED_CANDIDATE_COUNT,
+    "generation_strategy_options": ["true_random", "pseudo_random"],
+    "default_generation_strategy": DEFAULT_BUNDLE_GENERATION_STRATEGY,
+    "generation_strategy_labels": {
+        "true_random": "真随机",
+        "pseudo_random": "假随机",
+    },
     "reuse_limits": dict(REUSE_LIMITS),
 }
 
@@ -76,17 +90,29 @@ BUNDLE_FRONTEND_CONFIG = {
 def build_bundle_candidates(
     input_dir: str | Path,
     target_count: int = DEFAULT_BUNDLE_TARGET_COUNT,
+    generation_strategy: str = DEFAULT_BUNDLE_GENERATION_STRATEGY,
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
     input_root = _resolve_input_root(input_dir)
     target_count = _coerce_positive_int(target_count, "target_count")
+    generation_strategy = _normalize_generation_strategy(generation_strategy)
 
     semantic_records = _load_semantic_records(input_root, refresh=True)
-    pool_by_category = _group_semantic_records(semantic_records)
+    base_pool_by_category = _group_semantic_records(semantic_records)
     workspace, workspace_errors = _load_workspace(input_root, semantic_records)
     existing_errors = _load_error_rows(input_root)
     existing_signatures = {bundle_signature(bundle) for bundle in workspace}
     reuse_counts = _build_reuse_counts(workspace)
+    auto_comparison_bundles = _get_auto_workspace_bundles(workspace)
+    auto_generation = _prepare_auto_generation(
+        pool_by_category=base_pool_by_category,
+        generation_strategy=generation_strategy,
+    )
+    pool_by_category = auto_generation["pool_by_category"]
+    anchors = auto_generation["anchors"]
+    anchor_categories = auto_generation["anchor_categories"]
+    run_seed = auto_generation["run_seed"]
+    candidate_priority = auto_generation["candidate_priority"]
     cluster_cap = max(1, math.ceil(target_count * AUTO_CLUSTER_CAP_RATIO))
     cluster_counts = Counter(
         bundle.get("cluster_key")
@@ -99,14 +125,18 @@ def build_bundle_candidates(
         "type": "start",
         "input_dir": str(input_root),
         "target_count": target_count,
+        "generation_strategy": generation_strategy,
+        "run_seed": run_seed,
+        "anchor_categories": anchor_categories,
         "pool_counts": pool_counts,
         "existing_candidates": len(workspace),
         "cluster_cap": cluster_cap,
     })
 
-    anchors = list(pool_by_category.get(AUTO_ANCHOR_CATEGORY, []))
     if not anchors:
-        raise FileNotFoundError("No valid sofa semantic records found for auto bundle generation")
+        if generation_strategy == "pseudo_random":
+            raise FileNotFoundError("No valid sofa semantic records found for auto bundle generation")
+        raise FileNotFoundError("No valid semantic records found for auto bundle generation")
 
     new_bundles: list[dict[str, Any]] = []
     run_errors: list[dict[str, Any]] = []
@@ -118,7 +148,7 @@ def build_bundle_candidates(
             if len(new_bundles) >= target_count:
                 break
 
-            cluster_key = _cluster_key(anchor)
+            cluster_key = _cluster_key(anchor, anchor["category"])
             if cluster_counts[cluster_key] >= cluster_cap:
                 continue
 
@@ -128,10 +158,11 @@ def build_bundle_candidates(
                 pool_by_category=pool_by_category,
                 existing_signatures=existing_signatures,
                 reuse_counts=reuse_counts,
-                max_results=1,
+                max_results=AUTO_VARIANT_SELECTION_WINDOW,
                 top_k=AUTO_TOP_K,
                 beam_width=AUTO_BEAM_WIDTH,
-                locked_categories=[AUTO_ANCHOR_CATEGORY],
+                locked_categories=[anchor["category"]],
+                candidate_priority=candidate_priority,
             )
             if not variants:
                 anchor_key = str(anchor["source_image_path"])
@@ -148,7 +179,14 @@ def build_bundle_candidates(
                     ))
                 continue
 
-            bundle = variants[0]
+            auto_selection = _select_auto_variant(
+                variants=variants,
+                comparison_bundles=auto_comparison_bundles + new_bundles,
+            )
+            if not auto_selection:
+                continue
+
+            bundle = auto_selection["bundle"]
             new_bundles.append(bundle)
             made_progress = True
             existing_signatures.add(bundle_signature(bundle))
@@ -162,6 +200,10 @@ def build_bundle_candidates(
                 "status": "generated",
                 "bundle_id": bundle["bundle_id"],
                 "score": bundle["score"],
+                "raw_score": auto_selection["raw_score"],
+                "diversity_penalty": auto_selection["diversity_penalty"],
+                "adjusted_score": auto_selection["adjusted_score"],
+                "max_shared_non_anchor_slots": auto_selection["max_shared_non_anchor_slots"],
                 "anchor_category": bundle["anchor_category"],
                 "anchor_image_path": bundle["anchor_image_path"],
                 "cluster_key": bundle["cluster_key"],
@@ -181,6 +223,9 @@ def build_bundle_candidates(
     summary = {
         "input_dir": str(input_root),
         "target_count": target_count,
+        "generation_strategy": generation_strategy,
+        "run_seed": run_seed,
+        "anchor_categories": anchor_categories,
         "generated_count": len(new_bundles),
         "actual_generated": len(new_bundles),
         "items": combined,
@@ -355,6 +400,105 @@ def delete_bundle_candidate(
     }
 
 
+def delete_all_bundle_candidates(
+    input_dir: str | Path,
+) -> dict:
+    input_root = _resolve_input_root(input_dir)
+    semantic_records = _load_semantic_records(input_root, refresh=False)
+    workspace, _ = _load_workspace(input_root, semantic_records)
+    deleted_count = len(workspace)
+    _write_jsonl(input_root / BUNDLE_CANDIDATE_FILE, [])
+    _write_jsonl(input_root / BUNDLE_REVIEW_FILE, [])
+    return {
+        "status": "deleted_all",
+        "deleted_count": deleted_count,
+        "stats": _workspace_stats([]),
+    }
+
+
+def replace_bundle_item(
+    input_dir: str | Path,
+    bundle_id: str,
+    target_category: str,
+    replacement_image_path: str | Path,
+) -> dict:
+    input_root = _resolve_input_root(input_dir)
+    normalized_bundle_id = str(bundle_id or "").strip()
+    if not normalized_bundle_id:
+        raise ValueError("Unknown bundle_id: <empty>")
+
+    normalized_target_category = _normalize_bundle_category(target_category)
+    semantic_records = _load_semantic_records(input_root, refresh=True)
+    semantic_map = {
+        str(Path(record["source_image_path"]).resolve()): record
+        for record in semantic_records
+    }
+    workspace, workspace_errors = _load_workspace(input_root, semantic_records)
+    existing_errors = _load_error_rows(input_root)
+
+    bundle_map = {bundle["bundle_id"]: bundle for bundle in workspace}
+    current = bundle_map.get(normalized_bundle_id)
+    if not current:
+        raise ValueError(f"Unknown bundle_id: {normalized_bundle_id}")
+
+    locked_categories = {
+        _normalize_bundle_category(category)
+        for category in (current.get("locked_categories") or [])
+    }
+    if normalized_target_category in locked_categories:
+        raise ValueError(f"Category is locked and cannot be replaced: {normalized_target_category}")
+
+    item_map = {item["category"]: item for item in current["items"]}
+    current_item = item_map.get(normalized_target_category)
+    if not current_item:
+        raise ValueError(
+            f"Bundle {normalized_bundle_id} does not contain category: {normalized_target_category}"
+        )
+
+    replacement_path = _resolve_image_path(replacement_image_path, input_root)
+    replacement_record = semantic_map.get(str(replacement_path))
+    if not replacement_record:
+        raise ValueError(
+            "Replacement image must belong to the current directory and have a valid semantic tag"
+        )
+
+    replacement_category = _normalize_bundle_category(replacement_record.get("category"))
+    if replacement_category != normalized_target_category:
+        raise ValueError(
+            f"Replacement image category mismatch: expected {normalized_target_category}, got {replacement_category}"
+        )
+
+    if str(replacement_path) == current_item["image_path"]:
+        raise ValueError("Replacement image is already selected for this slot")
+
+    for item in current["items"]:
+        if item["category"] == normalized_target_category:
+            continue
+        if str(Path(item["image_path"]).resolve()) == str(replacement_path):
+            raise ValueError("Replacement image is already used by another slot in this bundle")
+
+    item_map[normalized_target_category] = _bundle_item_from_record(replacement_record)
+    ordered_items = [item_map[category] for category in BUNDLE_CATEGORIES]
+
+    updated_bundle = dict(current)
+    updated_bundle["items"] = ordered_items
+    updated_bundle["score"] = round(_bundle_average_pairwise_score(ordered_items), 4)
+    updated_bundle["status"] = "pending"
+    updated_bundle["updated_at"] = _now_iso()
+
+    ordered_workspace = [
+        updated_bundle if bundle["bundle_id"] == normalized_bundle_id else bundle
+        for bundle in workspace
+    ]
+    _persist_workspace(input_root, ordered_workspace, existing_errors + workspace_errors)
+    return {
+        "status": "replaced",
+        "bundle_id": normalized_bundle_id,
+        "item": updated_bundle,
+        "stats": _workspace_stats(ordered_workspace),
+    }
+
+
 def regenerate_bundle_candidate(
     input_dir: str | Path,
     bundle_id: str,
@@ -496,11 +640,157 @@ def render_bundle_outputs(
 
 
 def bundle_signature(bundle: dict[str, Any]) -> str:
-    item_map = {
-        normalize_catalog_type(item.get("category")): str(Path(item.get("image_path") or item.get("source_image_path")).resolve())
-        for item in bundle.get("items", [])
-    }
+    item_map = _bundle_category_path_map(bundle)
     return "||".join(item_map.get(category, "") for category in BUNDLE_CATEGORIES)
+
+
+def _normalize_generation_strategy(value: str | None) -> str:
+    normalized = str(value or DEFAULT_BUNDLE_GENERATION_STRATEGY).strip().lower()
+    if normalized not in BUNDLE_GENERATION_STRATEGIES:
+        raise ValueError(f"Invalid generation_strategy: {normalized or '<empty>'}")
+    return normalized
+
+
+def _prepare_auto_generation(
+    pool_by_category: dict[str, list[dict[str, Any]]],
+    generation_strategy: str,
+) -> dict[str, Any]:
+    normalized_strategy = _normalize_generation_strategy(generation_strategy)
+    if normalized_strategy == "pseudo_random":
+        return {
+            "pool_by_category": {
+                category: list(pool_by_category.get(category, []))
+                for category in BUNDLE_CATEGORIES
+            },
+            "anchors": list(pool_by_category.get(AUTO_ANCHOR_CATEGORY, [])),
+            "anchor_categories": [AUTO_ANCHOR_CATEGORY],
+            "run_seed": None,
+            "candidate_priority": None,
+        }
+
+    run_seed = uuid4().hex
+    rng = random.Random(run_seed)
+    randomized_pool: dict[str, list[dict[str, Any]]] = {}
+    candidate_priority: dict[str, int] = {}
+
+    for category in BUNDLE_CATEGORIES:
+        records = list(pool_by_category.get(category, []))
+        rng.shuffle(records)
+        randomized_pool[category] = records
+        for index, record in enumerate(records):
+            candidate_priority[str(record["source_image_path"])] = index
+
+    anchor_categories = [category for category in BUNDLE_CATEGORIES if randomized_pool.get(category)]
+    rng.shuffle(anchor_categories)
+    anchors: list[dict[str, Any]] = []
+    for category in anchor_categories:
+        anchors.extend(randomized_pool.get(category, []))
+
+    return {
+        "pool_by_category": randomized_pool,
+        "anchors": anchors,
+        "anchor_categories": anchor_categories,
+        "run_seed": run_seed,
+        "candidate_priority": candidate_priority,
+    }
+
+
+def _bundle_category_path_map(bundle: dict[str, Any]) -> dict[str, str]:
+    item_map: dict[str, str] = {}
+    for item in bundle.get("items", []):
+        category = normalize_catalog_type(item.get("category"))
+        image_path = item.get("image_path") or item.get("source_image_path")
+        if category not in BUNDLE_CATEGORY_SET or not image_path:
+            continue
+        item_map[category] = str(Path(image_path).resolve())
+    return item_map
+
+
+def _get_auto_workspace_bundles(workspace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        bundle
+        for bundle in workspace
+        if bundle.get("generation_mode") == "auto"
+    ]
+
+
+def _get_bundle_anchor_category(bundle: dict[str, Any]) -> str:
+    return normalize_catalog_type(bundle.get("anchor_category"))
+
+
+def _calculate_auto_diversity_penalty(
+    bundle: dict[str, Any],
+    comparison_bundles: list[dict[str, Any]],
+) -> dict[str, Any]:
+    bundle_map = _bundle_category_path_map(bundle)
+    bundle_anchor_category = _get_bundle_anchor_category(bundle)
+    total_penalty = 0.0
+    max_shared_non_anchor_slots = 0
+
+    for other_bundle in comparison_bundles:
+        other_map = _bundle_category_path_map(other_bundle)
+        other_anchor_category = _get_bundle_anchor_category(other_bundle)
+        same_anchor_image = (
+            bundle_anchor_category
+            and bundle_anchor_category == other_anchor_category
+            and bundle_map.get(bundle_anchor_category)
+            and bundle_map.get(bundle_anchor_category) == other_map.get(other_anchor_category)
+        )
+        if same_anchor_image:
+            total_penalty += AUTO_REPEAT_PENALTY_ANCHOR
+
+        shared_non_anchor_slots = 0
+        for category in BUNDLE_CATEGORIES:
+            if not bundle_map.get(category) or bundle_map.get(category) != other_map.get(category):
+                continue
+            if same_anchor_image and category == bundle_anchor_category:
+                continue
+            total_penalty += AUTO_REPEAT_PENALTY_NON_ANCHOR
+            shared_non_anchor_slots += 1
+
+        if shared_non_anchor_slots > AUTO_REPEAT_NON_ANCHOR_THRESHOLD:
+            total_penalty += (
+                shared_non_anchor_slots - AUTO_REPEAT_NON_ANCHOR_THRESHOLD
+            ) * AUTO_REPEAT_NON_ANCHOR_EXTRA_PENALTY
+        max_shared_non_anchor_slots = max(max_shared_non_anchor_slots, shared_non_anchor_slots)
+
+    return {
+        "diversity_penalty": round(total_penalty, 4),
+        "max_shared_non_anchor_slots": max_shared_non_anchor_slots,
+    }
+
+
+def _select_auto_variant(
+    variants: list[dict[str, Any]],
+    comparison_bundles: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    ranked: list[dict[str, Any]] = []
+
+    for bundle in variants:
+        raw_score = round(float(bundle.get("score") or 0.0), 4)
+        penalty_meta = _calculate_auto_diversity_penalty(bundle, comparison_bundles)
+        adjusted_score = round(raw_score - penalty_meta["diversity_penalty"], 4)
+        ranked.append({
+            "bundle": bundle,
+            "raw_score": raw_score,
+            "diversity_penalty": penalty_meta["diversity_penalty"],
+            "adjusted_score": adjusted_score,
+            "max_shared_non_anchor_slots": penalty_meta["max_shared_non_anchor_slots"],
+            "signature": bundle_signature(bundle),
+        })
+
+    if not ranked:
+        return None
+
+    ranked.sort(
+        key=lambda item: (
+            -item["adjusted_score"],
+            item["max_shared_non_anchor_slots"],
+            -item["raw_score"],
+            item["signature"],
+        ),
+    )
+    return ranked[0]
 
 
 def _get_seeded_group_bundles(workspace: list[dict[str, Any]], seed_path: str) -> list[dict[str, Any]]:
@@ -674,12 +964,17 @@ def _normalize_bundle(
         raise ValueError(f"Bundle {bundle_id} is missing categories: {', '.join(missing)}")
 
     ordered_items = [item_map[category] for category in BUNDLE_CATEGORIES]
+    normalized_cluster_key = (
+        _cluster_key(item_map[anchor_category]["semantic_tag"], anchor_category)
+        if generation_mode == "auto"
+        else str(raw.get("cluster_key") or _cluster_key(item_map[anchor_category]["semantic_tag"], anchor_category))
+    )
     return {
         "bundle_id": bundle_id,
         "generation_mode": generation_mode,
         "status": status,
         "score": round(float(raw.get("score") or _bundle_average_pairwise_score(ordered_items)), 4),
-        "cluster_key": str(raw.get("cluster_key") or _cluster_key(item_map[anchor_category]["semantic_tag"])),
+        "cluster_key": normalized_cluster_key,
         "anchor_category": anchor_category,
         "anchor_image_path": anchor_image_path,
         "locked_categories": [category for category in BUNDLE_CATEGORIES if category in locked_categories],
@@ -726,6 +1021,7 @@ def _generate_bundle_variants(
     top_k: int,
     beam_width: int,
     locked_categories: list[str],
+    candidate_priority: dict[str, int] | None = None,
     bundle_id: str | None = None,
     created_at: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -762,14 +1058,24 @@ def _generate_bundle_variants(
                     continue
                 candidates.append((slot_score, candidate))
 
-            candidates.sort(
-                key=lambda item: (
-                    item[0],
-                    semantic_compatibility(item[1], anchor_record),
-                    item[1]["relative_path"],
-                ),
-                reverse=True,
-            )
+            if candidate_priority is None:
+                candidates.sort(
+                    key=lambda item: (
+                        item[0],
+                        semantic_compatibility(item[1], anchor_record),
+                        item[1]["relative_path"],
+                    ),
+                    reverse=True,
+                )
+            else:
+                candidates.sort(
+                    key=lambda item: (
+                        -item[0],
+                        -semantic_compatibility(item[1], anchor_record),
+                        candidate_priority.get(str(item[1]["source_image_path"]), math.inf),
+                        item[1]["relative_path"],
+                    ),
+                )
 
             for slot_score, candidate in candidates[:top_k]:
                 selected = dict(partial["selected"])
@@ -888,7 +1194,7 @@ def _build_bundle_record(
         "generation_mode": generation_mode,
         "status": "pending",
         "score": round(_bundle_average_pairwise_score(items), 4),
-        "cluster_key": _cluster_key(anchor_record),
+        "cluster_key": _cluster_key(anchor_record, anchor_record["category"]),
         "anchor_category": anchor_record["category"],
         "anchor_image_path": str(anchor_record["source_image_path"]),
         "locked_categories": [category for category in BUNDLE_CATEGORIES if category in set(locked_categories)],
@@ -980,8 +1286,10 @@ def _pool_item_from_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _cluster_key(record: dict[str, Any]) -> str:
+def _cluster_key(record: dict[str, Any], anchor_category: str | None = None) -> str:
+    normalized_anchor = normalize_catalog_type(anchor_category or record.get("category"))
     return "|".join([
+        normalized_anchor,
         str(record.get("primary_style") or ""),
         str(record.get("color_family") or ""),
         str(record.get("main_material") or ""),
