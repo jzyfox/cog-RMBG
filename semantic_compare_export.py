@@ -448,11 +448,10 @@ def _build_exception_report_row_from_meta(exception_meta: dict[str, str]) -> Rep
         preview_image_path=preview_path,
         online_display=str(exception_meta.get("online_display", "")),
         local_display=str(exception_meta.get("local_display", "")),
-        difference_display=_make_rich_text(
+        difference_display=_make_multiline_rich_text(
             [
-                (f"异常: {exception_meta.get('type', '')}", COLOR_RED),
-                ("\n", None),
-                (str(exception_meta.get("message", "")), COLOR_RED),
+                [(f"异常: {exception_meta.get('type', '')}", COLOR_RED)],
+                [(str(exception_meta.get("message", "")), COLOR_RED)],
             ]
         ),
         is_exception=True,
@@ -625,18 +624,16 @@ def _compare_display_values(online_value: str, local_value: str) -> str:
 
 
 def _build_side_rich_text(field_results: list[dict[str, str]], side: str) -> CellRichText:
-    segments: list[tuple[str, str | None]] = []
-    for index, item in enumerate(field_results):
-        if index > 0:
-            segments.append(("\n", None))
+    lines: list[list[tuple[str, str | None]]] = []
+    for item in field_results:
         color = _get_side_color(item["status"], side)
         line = f'{item["field_label"]}: {item["online_value"] if side == "online" else item["local_value"] or "-"}'
         if side == "online" and not item["online_value"]:
             line = f'{item["field_label"]}: -'
         if side == "local" and not item["local_value"]:
             line = f'{item["field_label"]}: -'
-        segments.append((line, color))
-    return _make_rich_text(segments)
+        lines.append([(line, color)])
+    return _make_multiline_rich_text(lines)
 
 
 def _get_side_color(status: str, side: str) -> str | None:
@@ -664,16 +661,16 @@ def _build_difference_rich_text(field_results: list[dict[str, str]]) -> str | Ce
     if not missing_fields and not different_fields:
         return "一致"
 
-    segments: list[tuple[str, str | None]] = []
+    lines: list[list[tuple[str, str | None]]] = []
     if missing_fields:
-        segments.append(("缺失：", None))
-        segments.extend(_join_label_segments(missing_fields, COLOR_RED))
+        line: list[tuple[str, str | None]] = [("缺失：", None)]
+        line.extend(_join_label_segments(missing_fields, COLOR_RED))
+        lines.append(line)
     if different_fields:
-        if segments:
-            segments.append(("\n", None))
-        segments.append(("不同：", None))
-        segments.extend(_join_label_segments(different_fields, COLOR_YELLOW))
-    return _make_rich_text(segments)
+        line = [("不同：", None)]
+        line.extend(_join_label_segments(different_fields, COLOR_YELLOW))
+        lines.append(line)
+    return _make_multiline_rich_text(lines)
 
 
 def _join_label_segments(labels: list[str], color: str) -> list[tuple[str, str | None]]:
@@ -694,6 +691,28 @@ def _make_rich_text(segments: list[tuple[str, str | None]]) -> CellRichText:
             rich.append(TextBlock(InlineFont(color=color), text))
         else:
             rich.append(text)
+    return rich
+
+
+def _make_multiline_rich_text(lines: list[list[tuple[str, str | None]]]) -> CellRichText:
+    rich = CellRichText()
+    visible_line_index = 0
+    total_visible_lines = sum(1 for line in lines if any(text for text, _ in line))
+
+    for line in lines:
+        visible_segments = [(text, color) for text, color in line if text]
+        if not visible_segments:
+            continue
+
+        visible_line_index += 1
+        is_last_line = visible_line_index == total_visible_lines
+        for segment_index, (text, color) in enumerate(visible_segments):
+            is_last_segment = segment_index == len(visible_segments) - 1
+            segment_text = text if is_last_line or not is_last_segment else f"{text}\n"
+            if color:
+                rich.append(TextBlock(InlineFont(color=color), segment_text))
+            else:
+                rich.append(segment_text)
     return rich
 
 
@@ -723,7 +742,7 @@ def _build_report_sheet(sheet, rows: list[ReportRow], image_refs: list[io.BytesI
         sheet.cell(row=index, column=5, value=row.local_display)
         sheet.cell(row=index, column=6, value=row.difference_display)
         _style_data_row(sheet, index)
-        sheet.row_dimensions[index].height = 108
+        sheet.row_dimensions[index].height = _estimate_row_height(row)
 
         if row.is_exception:
             for col in ("A", "B", "D", "E", "F"):
@@ -747,6 +766,22 @@ def _style_data_row(sheet, row_index: int) -> None:
     for col in ("A", "B", "D", "E", "F"):
         sheet[f"{col}{row_index}"].alignment = Alignment(vertical="top", wrap_text=True)
     sheet[f"C{row_index}"].alignment = Alignment(horizontal="center", vertical="center")
+
+
+def _estimate_row_height(row: ReportRow) -> float:
+    max_lines = max(
+        _count_explicit_lines(row.online_display),
+        _count_explicit_lines(row.local_display),
+        _count_explicit_lines(row.difference_display),
+    )
+    return max(72.0, min(180.0, 16.0 * max_lines + 12.0))
+
+
+def _count_explicit_lines(value: str | CellRichText) -> int:
+    text = str(value or "")
+    if not text:
+        return 1
+    return text.count("\n") + 1
 
 
 def _build_excel_thumbnail(image_path: Path | None) -> tuple[ExcelImage, io.BytesIO] | None:
