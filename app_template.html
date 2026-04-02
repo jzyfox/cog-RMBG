@@ -297,6 +297,38 @@
       </div>
     </div>
 
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div>
+        <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">标签对比</h2>
+        <div class="text-sm text-gray-400 mt-1">导出带缩略图的 Excel 对比表，方便并排查看在线模型与本地 8B 的语义标签差异。</div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">目标品类</label>
+          <select id="sem-compare-category"></select>
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">在线模型标签目录</label>
+          <input id="sem-compare-online-dir" type="text" placeholder="例如：J:/semantic_online" />
+        </div>
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">本地 8B 标签目录</label>
+          <input id="sem-compare-local-dir" type="text" placeholder="例如：J:/semantic_local_qwen8b" />
+        </div>
+      </div>
+      <div class="text-xs text-gray-500 leading-6 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
+        会递归扫描两个目录下的 <span class="font-mono text-gray-300">.json</span> sidecar，
+        仅对所选品类进行比较，优先按相对路径配对，必要时再按唯一文件名回退，并导出 <span class="font-mono text-gray-300">.xlsx</span> 报告。
+      </div>
+      <div class="flex items-center gap-3 flex-wrap">
+        <button id="sem-compare-export-btn" onclick="exportSemanticCompareReport()" class="bg-sky-600 hover:bg-sky-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v10m0 0l-4-4m4 4l4-4M4 20h16"/></svg>
+          <span>导出 Excel 对比表</span>
+        </button>
+        <div id="sem-compare-status" class="text-sm text-gray-500 min-h-[1.25rem]"></div>
+      </div>
+    </div>
+
     <div id="sem-progress-card" class="hidden bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
       <div class="flex justify-between items-center">
         <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">打标进度</h2>
@@ -1665,7 +1697,7 @@ function listenSemantic() {
     if (msg.type === 'start') {
       document.getElementById('sem-result-path').textContent = `输入目录：${msg.input_dir}`;
       semanticLog(`发现 ${msg.total} 张 ${msg.category} 图片，开始批量打标...`, 'text-gray-400');
-      semanticLog(`当前模型：${getSemanticModelLabel(msg.model || semanticState.model)}`, 'text-gray-500');
+      semanticLog(`当前后端：${getSemanticBackendLabel(msg.backend)} · 当前模型：${getSemanticModelLabel(msg.model || semanticState.model)}`, 'text-gray-500');
       semanticLog(`跳过已有：${msg.skip_existing ? '是' : '否'} · 重试：${msg.max_retries} · 间隔：${msg.sleep_seconds}s`, 'text-gray-500');
       setSemanticProgress(0, msg.total);
     }
@@ -1841,6 +1873,13 @@ function getSemanticModelLabel(model) {
   return labels[normalized] || normalized || getDefaultSemanticModel();
 }
 
+function getSemanticBackendLabel(backend) {
+  const normalized = String(backend || '').trim();
+  if (normalized === 'local_qwen3_vl') return 'Local Qwen';
+  if (normalized === 'dashscope') return 'DashScope';
+  return normalized || 'Unknown';
+}
+
 function readStoredSemanticModel() {
   try {
     const stored = window.localStorage.getItem('semantic_selected_model');
@@ -1896,6 +1935,28 @@ function getSemanticCategoryOptions() {
     .filter(item => item.supported)
     .map(item => item.value);
   return options.length ? options : (DEFAULT_SEMANTIC_CONFIG.category_options || []);
+}
+
+function populateSemanticCompareCategorySelect(selectedCategory) {
+  const select = document.getElementById('sem-compare-category');
+  if (!select) return;
+
+  const categoryOptions = getSemanticCategoryOptions();
+  select.innerHTML = '';
+  categoryOptions.forEach(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = getSemanticCategoryLabel(value);
+    select.appendChild(option);
+  });
+
+  const normalizedSelected = isSemanticCategorySupported(selectedCategory)
+    ? String(selectedCategory).trim()
+    : getDefaultSemanticCategory();
+  select.value = normalizedSelected;
+  if (select.value !== normalizedSelected && categoryOptions.length > 0) {
+    select.value = categoryOptions[0];
+  }
 }
 
 function isSemanticCategorySupported(category) {
@@ -2114,6 +2175,7 @@ function resetSemanticLoadedItems() {
 function initializeSemanticUI() {
   const categorySelect = document.getElementById('sem-category');
   const modelSelect = document.getElementById('sem-model');
+  const compareCategorySelect = document.getElementById('sem-compare-category');
   if (!categorySelect) return;
 
   const categoryItems = getSemanticCategoryItems();
@@ -2138,6 +2200,7 @@ function initializeSemanticUI() {
   }
 
   semanticState.model = readStoredSemanticModel();
+  populateSemanticCompareCategorySelect(semanticState.category);
   if (modelSelect) {
     modelSelect.innerHTML = '';
     getSemanticModelOptions().forEach(value => {
@@ -2175,6 +2238,7 @@ function initializeSemanticUI() {
     }
 
     semanticState.category = nextCategory;
+    if (compareCategorySelect) compareCategorySelect.value = nextCategory;
     if (categoryChanged) {
       resetSemanticLoadedItems();
       semanticLog(`已切换到 ${getSemanticCategoryLabel(nextCategory)}，请重新加载该品类结果。`, 'text-gray-500');
@@ -2637,7 +2701,7 @@ function listenSemantic() {
     if (msg.type === 'start') {
       document.getElementById('sem-result-path').textContent = `输入目录：${msg.input_dir}`;
       semanticLog(`发现 ${msg.total} 张 ${getSemanticCategoryLabel(msg.category)} 图片，开始批量打标...`, 'text-gray-400');
-      semanticLog(`当前模型：${getSemanticModelLabel(msg.model || semanticState.model)}`, 'text-gray-500');
+      semanticLog(`当前后端：${getSemanticBackendLabel(msg.backend)} · 当前模型：${getSemanticModelLabel(msg.model || semanticState.model)}`, 'text-gray-500');
       semanticLog(`跳过已有：${msg.skip_existing ? '是' : '否'} · 重试：${msg.max_retries} · 间隔：${msg.sleep_seconds}s`, 'text-gray-500');
       setSemanticProgress(0, msg.total);
     }
@@ -2866,6 +2930,97 @@ function reassignCurrentSemanticItem() {
       actionButton.disabled = false;
       targetSelect.disabled = false;
       actionButton.textContent = previousButtonText;
+    });
+}
+
+function getDownloadFileNameFromResponse(response, fallbackName) {
+  const disposition = response.headers.get('content-disposition') || '';
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match && utf8Match[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch (error) {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  if (plainMatch && plainMatch[1]) {
+    return plainMatch[1];
+  }
+  return fallbackName;
+}
+
+function setSemanticCompareStatus(text, cls = 'text-gray-500') {
+  const status = document.getElementById('sem-compare-status');
+  if (!status) return;
+  status.className = `text-sm min-h-[1.25rem] ${cls}`;
+  status.textContent = text;
+}
+
+function exportSemanticCompareReport() {
+  const compareCategory = document.getElementById('sem-compare-category').value;
+  const onlineDir = document.getElementById('sem-compare-online-dir').value.trim();
+  const localDir = document.getElementById('sem-compare-local-dir').value.trim();
+  const button = document.getElementById('sem-compare-export-btn');
+  const label = button ? button.querySelector('span') : null;
+  const previousText = label ? label.textContent : '';
+
+  if (!isSemanticCategorySupported(compareCategory)) {
+    alert('请选择要对比的语义品类');
+    return;
+  }
+  if (!onlineDir || !localDir) {
+    alert('请填写在线模型标签目录和本地 8B 标签目录');
+    return;
+  }
+
+  if (button) button.disabled = true;
+  if (label) label.textContent = '正在导出...';
+  setSemanticCompareStatus('正在生成 Excel 对比表，请稍候...', 'text-sky-300');
+
+  fetch('/semantic/compare/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      online_dir: onlineDir,
+      local_dir: localDir,
+      category: compareCategory,
+    }),
+  })
+    .then(async response => {
+      if (!response.ok) {
+        let message = '导出失败';
+        try {
+          const payload = await response.json();
+          if (payload && payload.error) {
+            message = payload.error;
+          }
+        } catch (error) {
+          // Ignore JSON parsing errors for binary responses.
+        }
+        throw new Error(message);
+      }
+
+      const blob = await response.blob();
+      const downloadName = getDownloadFileNameFromResponse(response, `semantic_compare_${compareCategory}.xlsx`);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = downloadName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+
+      setSemanticCompareStatus(`已导出 ${downloadName}`, 'text-emerald-300');
+    })
+    .catch(err => {
+      setSemanticCompareStatus(err.message || '导出失败', 'text-red-400');
+      alert(err.message || '导出失败');
+    })
+    .finally(() => {
+      if (button) button.disabled = false;
+      if (label) label.textContent = previousText || '导出 Excel 对比表';
     });
 }
 

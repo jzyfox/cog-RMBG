@@ -25,6 +25,7 @@ from asset_catalog_grid import (
 from flask import Flask, Response, abort, render_template_string, request, send_file
 from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_WIDTH
 from PIL import Image
+from semantic_compare_export import REPORT_MIMETYPE, export_semantic_compare_report
 from semantic_bundle_builder import (
     BUNDLE_FRONTEND_CONFIG,
     BUNDLE_GENERATION_STRATEGIES,
@@ -44,7 +45,7 @@ from semantic_bundle_builder import (
     seed_bundle_candidates,
 )
 from semantic_tagger import (
-    DEFAULT_SEMANTIC_MODEL,
+    DEFAULT_SEMANTIC_MODEL_SELECTION,
     DEFAULT_MAX_RETRIES as DEFAULT_SEMANTIC_MAX_RETRIES,
     DEFAULT_SLEEP_SECONDS as DEFAULT_SEMANTIC_SLEEP_SECONDS,
     build_semantic_frontend_config,
@@ -1219,7 +1220,7 @@ def start_semantic():
 
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
-    model = data.get("model", "").strip() or DEFAULT_SEMANTIC_MODEL
+    model = data.get("model", "").strip() or DEFAULT_SEMANTIC_MODEL_SELECTION
     semantic_config = _get_semantic_frontend_config()
 
     try:
@@ -1283,6 +1284,30 @@ def save_semantic():
     except Exception as exc:
         return {"error": str(exc)}, 400
     return payload
+
+
+@app.route("/semantic/compare/export", methods=["POST"])
+def export_semantic_compare():
+    data = request.json or {}
+    online_dir = data.get("online_dir", "").strip()
+    local_dir = data.get("local_dir", "").strip()
+    category = data.get("category", "").strip()
+
+    try:
+        workbook, download_name = export_semantic_compare_report(
+            online_dir=online_dir,
+            local_dir=local_dir,
+            category=category,
+        )
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+
+    return send_file(
+        workbook,
+        mimetype=REPORT_MIMETYPE,
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 
 @app.route("/semantic/reassign", methods=["POST"])

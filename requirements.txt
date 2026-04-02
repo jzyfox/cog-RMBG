@@ -1,7 +1,10 @@
+accelerate
+fastapi
 flask
 huggingface_hub
 numpy
 openai
+openpyxl
 pillow
 scikit-image
 torch
@@ -9,3 +12,4 @@ torchvision
 tqdm
 transformers
 typing
+uvicorn

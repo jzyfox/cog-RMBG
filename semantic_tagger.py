@@ -5,6 +5,8 @@ import io
 import json
 import os
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +36,15 @@ SUPPORTED_SEMANTIC_MODELS = [
     "qwen3.5-flash-2026-02-23",
 ]
 SUPPORTED_SEMANTIC_MODEL_SET = set(SUPPORTED_SEMANTIC_MODELS)
+DEFAULT_SEMANTIC_MODEL_SELECTION = "local_qwen3_vl"
+SUPPORTED_SEMANTIC_MODEL_SELECTIONS = [
+    DEFAULT_SEMANTIC_MODEL_SELECTION,
+    *SUPPORTED_SEMANTIC_MODELS,
+]
+SUPPORTED_SEMANTIC_MODEL_SELECTION_SET = set(SUPPORTED_SEMANTIC_MODEL_SELECTIONS)
 SEMANTIC_MODEL_LABELS = {
+    DEFAULT_SEMANTIC_MODEL_SELECTION: "Local Qwen3-VL-8B-Instruct",
+    "Qwen3-VL-8B-Instruct": "Qwen3-VL-8B-Instruct",
     "qwen3.5-plus": "Qwen3.5 Plus",
     "qwen3.5-flash": "Qwen3.5 Flash",
     "qwen3-vl-plus": "Qwen3-VL Plus",
@@ -54,6 +64,16 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_MAX_IMAGE_SIDE = 1600
 DEFAULT_JPEG_QUALITY = 90
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+SEMANTIC_BACKEND_DASHSCOPE = "dashscope"
+SEMANTIC_BACKEND_LOCAL_QWEN3_VL = "local_qwen3_vl"
+DEFAULT_SEMANTIC_BACKEND = SEMANTIC_BACKEND_DASHSCOPE
+SUPPORTED_SEMANTIC_BACKENDS = {
+    SEMANTIC_BACKEND_DASHSCOPE,
+    SEMANTIC_BACKEND_LOCAL_QWEN3_VL,
+}
+DEFAULT_LOCAL_QWEN3_VL_URL = "http://127.0.0.1:8008"
+LOCAL_QWEN3_VL_MODEL = "Qwen3-VL-8B-Instruct"
+LOCAL_QWEN3_VL_TIMEOUT_SECONDS = 600
 
 STYLE_OPTIONS = [
     "现代",
@@ -231,9 +251,9 @@ def build_semantic_frontend_config(category_rows: list[dict[str, Any]] | None = 
         "shared_enums": SEMANTIC_SHARED_ENUMS,
         "enums": SEMANTIC_SHARED_ENUMS,
         "default_category": default_category,
-        "model_options": list(SUPPORTED_SEMANTIC_MODELS),
+        "model_options": list(SUPPORTED_SEMANTIC_MODEL_SELECTIONS),
         "model_labels": dict(SEMANTIC_MODEL_LABELS),
-        "default_model": DEFAULT_SEMANTIC_MODEL,
+        "default_model": DEFAULT_SEMANTIC_MODEL_SELECTION,
         "default_sleep_seconds": DEFAULT_SLEEP_SECONDS,
         "default_max_retries": DEFAULT_MAX_RETRIES,
     }
@@ -245,7 +265,7 @@ SEMANTIC_FRONTEND_CONFIG = build_semantic_frontend_config()
 def build_semantic_tags(
     input_dir: str | Path,
     category: str = SEMANTIC_CATEGORY,
-    model: str = DEFAULT_SEMANTIC_MODEL,
+    model: str = DEFAULT_SEMANTIC_MODEL_SELECTION,
     skip_existing: bool = True,
     sleep_seconds: float = DEFAULT_SLEEP_SECONDS,
     max_retries: int = DEFAULT_MAX_RETRIES,
@@ -254,6 +274,8 @@ def build_semantic_tags(
     input_root = Path(input_dir).expanduser().resolve()
     category = _normalize_target_category(category)
     model = normalize_semantic_model(model)
+    backend = _get_semantic_backend(model)
+    runtime_model = _get_semantic_runtime_model(model)
     sleep_seconds = _coerce_sleep_seconds(sleep_seconds)
     max_retries = _coerce_max_retries(max_retries)
 
@@ -270,7 +292,8 @@ def build_semantic_tags(
         "type": "start",
         "input_dir": str(input_root),
         "category": category,
-        "model": model,
+        "model": runtime_model,
+        "backend": backend,
         "total": len(images),
         "skip_existing": skip_existing,
         "sleep_seconds": sleep_seconds,
@@ -313,6 +336,7 @@ def build_semantic_tags(
                 input_root=input_root,
                 category=category,
                 model=model,
+                backend=backend,
                 sleep_seconds=sleep_seconds,
                 max_retries=max_retries,
             )
@@ -351,7 +375,8 @@ def build_semantic_tags(
     return {
         "input_dir": str(input_root),
         "category": category,
-        "model": model,
+        "model": runtime_model,
+        "backend": backend,
         "total": len(images),
         "stats": {
             **stats,
@@ -580,11 +605,13 @@ def _tag_single_image(
     input_root: Path,
     category: str,
     model: str,
+    backend: str,
     sleep_seconds: float,
     max_retries: int,
 ) -> dict:
     last_error: Exception | None = None
     prompt = _build_prompt(category)
+    runtime_model = _get_semantic_runtime_model(model)
     data_url = _image_path_to_data_url(
         image_path=image_path,
         max_image_side=DEFAULT_MAX_IMAGE_SIDE,
@@ -596,13 +623,13 @@ def _tag_single_image(
             time.sleep(sleep_seconds)
 
         try:
-            raw_response = _call_qwen_vlm(data_url, prompt, model=model)
+            raw_response = _call_qwen_vlm(data_url, prompt, model=model, backend=backend)
             payload = _parse_json_object(raw_response)
             return _validate_semantic_record(
                 payload,
                 image_path=image_path,
                 input_root=input_root,
-                vlm_model=model,
+                vlm_model=runtime_model,
                 refresh_updated_at=True,
             )
         except Exception as exc:
@@ -615,7 +642,14 @@ def _call_qwen_vlm(
     image_data_url: str,
     prompt: str,
     model: str,
+    backend: str,
 ) -> str:
+    if backend == SEMANTIC_BACKEND_LOCAL_QWEN3_VL:
+        return _call_local_qwen3_vl(
+            image_data_url=image_data_url,
+            prompt=prompt,
+            model=model,
+        )
     try:
         from openai import OpenAI
     except Exception as exc:
@@ -630,7 +664,7 @@ def _call_qwen_vlm(
         base_url=os.getenv("DASHSCOPE_BASE_URL", DEFAULT_BASE_URL),
     )
     response = client.chat.completions.create(
-        model=normalize_semantic_model(model),
+        model=_normalize_dashscope_semantic_model(model),
         messages=[
             {
                 "role": "user",
@@ -665,6 +699,52 @@ def _call_qwen_vlm(
                 text_parts.append(str(item))
         return "\n".join(part for part in text_parts if part)
     return str(content)
+
+
+def _call_local_qwen3_vl(
+    image_data_url: str,
+    prompt: str,
+    model: str,
+) -> str:
+    payload = json.dumps({
+        "image_data_url": image_data_url,
+        "prompt": prompt,
+        "model": _get_semantic_runtime_model(model),
+    }).encode("utf-8")
+    service_url = f"{_get_local_qwen3_vl_url()}/semantic-tag"
+    request = urllib.request.Request(
+        service_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=LOCAL_QWEN3_VL_TIMEOUT_SECONDS) as response:
+            response_body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"local_qwen3_vl service returned HTTP {exc.code}: {detail}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Unable to reach local_qwen3_vl service at {service_url}: {exc.reason}"
+        ) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"local_qwen3_vl service timed out after {LOCAL_QWEN3_VL_TIMEOUT_SECONDS} seconds"
+        ) from exc
+
+    try:
+        data = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("local_qwen3_vl service returned invalid JSON") from exc
+
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("local_qwen3_vl service returned empty text")
+    return text
 
 
 def _image_path_to_data_url(
@@ -852,6 +932,29 @@ def _validate_semantic_record(
         "vlm_model": str(vlm_model or raw.get("vlm_model") or DEFAULT_SEMANTIC_MODEL),
         "updated_at": _now_iso() if refresh_updated_at else str(raw.get("updated_at") or _now_iso()),
     }
+
+
+def normalize_semantic_record(
+    raw: Any,
+    image_path: str | Path,
+    input_root: str | Path,
+    *,
+    vlm_model: str | None = None,
+    prompt_version: str | None = None,
+    refresh_updated_at: bool = False,
+) -> dict[str, Any]:
+    """Normalize one semantic sidecar with the same validation rules used by tagging/review."""
+
+    resolved_image_path = Path(image_path).expanduser().resolve()
+    resolved_input_root = Path(input_root).expanduser().resolve()
+    return _validate_semantic_record(
+        raw=raw,
+        image_path=resolved_image_path,
+        input_root=resolved_input_root,
+        vlm_model=vlm_model,
+        prompt_version=prompt_version,
+        refresh_updated_at=refresh_updated_at,
+    )
 
 
 def _build_prompt(category: str) -> str:
@@ -1207,11 +1310,52 @@ def _normalize_target_category(category: Any) -> str:
 def normalize_semantic_model(model: Any) -> str:
     normalized = str(model or "").strip()
     if not normalized:
+        return DEFAULT_SEMANTIC_MODEL_SELECTION
+    if normalized not in SUPPORTED_SEMANTIC_MODEL_SELECTION_SET:
+        supported = ", ".join(SUPPORTED_SEMANTIC_MODEL_SELECTIONS)
+        raise ValueError(f"当前仅支持以下视觉模型：{supported}")
+    return normalized
+
+
+def _normalize_dashscope_semantic_model(model: Any) -> str:
+    normalized = str(model or "").strip()
+    if not normalized:
         return DEFAULT_SEMANTIC_MODEL
     if normalized not in SUPPORTED_SEMANTIC_MODEL_SET:
         supported = ", ".join(SUPPORTED_SEMANTIC_MODELS)
         raise ValueError(f"当前仅支持以下视觉模型：{supported}")
     return normalized
+
+
+def _get_semantic_backend(model: Any | None = None) -> str:
+    normalized_model = str(model or "").strip()
+    if normalized_model:
+        selection = normalize_semantic_model(normalized_model)
+        if selection == SEMANTIC_BACKEND_LOCAL_QWEN3_VL:
+            return SEMANTIC_BACKEND_LOCAL_QWEN3_VL
+        return SEMANTIC_BACKEND_DASHSCOPE
+
+    backend = str(os.getenv("SEMANTIC_BACKEND", DEFAULT_SEMANTIC_BACKEND) or "").strip().lower()
+    if not backend:
+        return DEFAULT_SEMANTIC_BACKEND
+    if backend not in SUPPORTED_SEMANTIC_BACKENDS:
+        supported = ", ".join(sorted(SUPPORTED_SEMANTIC_BACKENDS))
+        raise ValueError(f"Unsupported SEMANTIC_BACKEND: {backend}. Supported values: {supported}")
+    return backend
+
+
+def _get_local_qwen3_vl_url() -> str:
+    return str(
+        os.getenv("LOCAL_QWEN3_VL_URL", DEFAULT_LOCAL_QWEN3_VL_URL)
+        or DEFAULT_LOCAL_QWEN3_VL_URL
+    ).rstrip("/")
+
+
+def _get_semantic_runtime_model(model: Any) -> str:
+    requested_model = normalize_semantic_model(model)
+    if requested_model == SEMANTIC_BACKEND_LOCAL_QWEN3_VL:
+        return LOCAL_QWEN3_VL_MODEL
+    return _normalize_dashscope_semantic_model(requested_model)
 
 
 def _coerce_sleep_seconds(value: Any) -> float:
