@@ -18,7 +18,7 @@
       "height": 231,
       "allowed_types": [
         "dining_table",
-        "bedside_table"
+        "cabinet"
       ]
     },
     {
@@ -37,7 +37,7 @@
       "height": 223,
       "allowed_types": [
         "coffee_table",
-        "bedside_table"
+        "cabinet"
       ]
     },
     {
@@ -57,7 +57,7 @@
       "allowed_types": []
     },
     {
-      "type": "bedside_table",
+      "type": "cabinet",
       "x": 657,
       "y": 762,
       "width": 280,
