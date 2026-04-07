@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-03T18:09:00+08:00",
+  "mappings": {
+    "armchair": "lounge_chair",
+    "chair": "dining_chair",
+    "coaster": "coffee_table",
+    "commode": "cabinet",
+    "director_chair": "lounge_chair",
+    "drawer_cabinet": "cabinet",
+    "loveseat": "sofa",
+    "nightstand": "cabinet",
+    "recliner": "lounge_chair",
+    "rocking_chair": "lounge_chair",
+    "sectional": "sofa",
+    "sectional_sofa": "sofa",
+    "swivel_chair": "lounge_chair",
+    "table": "dining_table"
+  }
+}

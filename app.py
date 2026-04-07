@@ -4,11 +4,15 @@ BRIA RMBG + CLIP 分类 - 本地 Web 界面
 然后浏览器访问 http://localhost:5000
 """
 
+import base64
 import json
 import io
+import os
 import queue
 import shutil
 import threading
+import urllib.error
+import urllib.request
 import webbrowser
 from copy import deepcopy
 from pathlib import Path
@@ -17,10 +21,21 @@ from asset_catalog_grid import (
     CATALOG_GENERATION_MODES,
     DEFAULT_CATALOG_LAYOUT,
     build_classified_catalog_name,
+    normalize_catalog_token,
     normalize_catalog_type,
     normalize_layout_config,
     parse_catalog_category_from_stem,
     strip_catalog_category_suffix,
+)
+from classification_mapping import (
+    MAPPING_TARGET_CATEGORIES,
+    load_directory_mapping_snapshot,
+    load_global_mapping_preset,
+    normalize_mapping_source_label,
+    normalize_mapping_target_category,
+    resolve_effective_target_category,
+    save_directory_mapping_snapshot,
+    save_global_mapping_preset,
 )
 from flask import Flask, Response, abort, render_template_string, request, send_file
 from hero_image_cleaner import DEFAULT_EDGE_BRIGHTNESS_THRESHOLD, DEFAULT_EDGE_WIDTH
@@ -45,13 +60,17 @@ from semantic_bundle_builder import (
     seed_bundle_candidates,
 )
 from semantic_tagger import (
+    DEFAULT_LOCAL_QWEN3_VL_URL,
     DEFAULT_SEMANTIC_MODEL_SELECTION,
     DEFAULT_MAX_RETRIES as DEFAULT_SEMANTIC_MAX_RETRIES,
     DEFAULT_SLEEP_SECONDS as DEFAULT_SEMANTIC_SLEEP_SECONDS,
+    LOCAL_QWEN3_VL_MODEL,
+    LOCAL_QWEN3_VL_TIMEOUT_SECONDS,
     build_semantic_frontend_config,
     build_semantic_tags,
     load_semantic_review_data,
     normalize_semantic_model,
+    rebuild_semantic_indices,
     reassign_semantic_review_item,
     save_semantic_review_items,
 )
@@ -93,58 +112,188 @@ def _resolve_semantic_request_category(raw_category: str | None, semantic_config
     return normalized
 
 
-def _get_classification_category_names(include_uncertain: bool = False) -> list[str]:
+def _normalize_classification_category_name(raw_category: str | None) -> str:
+    return normalize_catalog_token(str(raw_category or "").strip().lower())
+
+
+def _merge_classification_category_names(
+    *groups: list[str] | tuple[str, ...] | set[str],
+) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
-    for row in _load_categories():
-        raw_name = row.get("name") if isinstance(row, dict) else row
-        normalized = normalize_catalog_type(str(raw_name or "").strip().lower())
-        if not normalized or normalized == "default" or normalized in seen:
-            continue
-        seen.add(normalized)
-        names.append(normalized)
-    if include_uncertain and UNCERTAIN_CATEGORY not in seen:
+    for values in groups:
+        for value in values:
+            normalized = _normalize_classification_category_name(value)
+            if not normalized or normalized == "default" or normalized in seen:
+                continue
+            seen.add(normalized)
+            names.append(normalized)
+    return names
+
+
+def _get_classification_category_names(include_uncertain: bool = False) -> list[str]:
+    names = _merge_classification_category_names(
+        [
+            row.get("name") if isinstance(row, dict) else row
+            for row in _load_categories()
+        ],
+    )
+    if include_uncertain and UNCERTAIN_CATEGORY not in names:
         names.append(UNCERTAIN_CATEGORY)
     return names
 
 
-def _normalize_classification_review_category(raw_category: str | None) -> str:
-    allowed_categories = _get_classification_category_names(include_uncertain=True)
-    normalized = str(raw_category or "").strip().lower()
-    if not normalized:
-        raise ValueError("请选择要加载的当前分类")
-    if normalized != UNCERTAIN_CATEGORY:
-        normalized = normalize_catalog_type(normalized)
-    if normalized not in allowed_categories:
-        allowed_display = ", ".join(allowed_categories)
-        raise ValueError(f"当前分类不在已保存的分类配置中：{normalized}（允许值：{allowed_display}）")
+def _classification_index_path(output_root: Path) -> Path:
+    return output_root / CLASSIFICATION_INDEX_FILE_NAME
+
+
+def _load_classification_index(output_root: Path) -> dict[str, str]:
+    index_path = _classification_index_path(output_root)
+    if not index_path.exists():
+        return {}
+
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    raw_items = payload.get("items") if isinstance(payload, dict) else payload
+    if not isinstance(raw_items, dict):
+        return {}
+
+    items: dict[str, str] = {}
+    for raw_relative_path, raw_category in raw_items.items():
+        relative_path = str(raw_relative_path or "").replace("\\", "/").strip().lstrip("./")
+        if not relative_path or Path(relative_path).suffix.lower() != ".png":
+            continue
+        normalized_category = _normalize_classification_category_name(raw_category)
+        if not normalized_category or normalized_category == "default":
+            continue
+        items[relative_path] = normalized_category
+    return items
+
+
+def _save_classification_index(output_root: Path, items: dict[str, str]) -> dict[str, str]:
+    index_path = _classification_index_path(output_root)
+    normalized_items: dict[str, str] = {}
+
+    for raw_relative_path, raw_category in items.items():
+        relative_path = str(raw_relative_path or "").replace("\\", "/").strip().lstrip("./")
+        if not relative_path or Path(relative_path).suffix.lower() != ".png":
+            continue
+        absolute_path = (output_root / Path(relative_path)).resolve()
+        if not absolute_path.exists() or not absolute_path.is_file():
+            continue
+        normalized_category = _normalize_classification_category_name(raw_category)
+        if not normalized_category or normalized_category == "default":
+            continue
+        normalized_items[relative_path] = normalized_category
+
+    if normalized_items:
+        payload = {
+            "version": CLASSIFICATION_INDEX_VERSION,
+            "items": dict(sorted(normalized_items.items())),
+        }
+        index_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    elif index_path.exists():
+        index_path.unlink()
+
+    return normalized_items
+
+
+def _get_classified_output_category(
+    image_path: Path,
+    *,
+    indexed_category: str | None = None,
+    candidate_categories: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str:
+    normalized_indexed_category = _normalize_classification_category_name(indexed_category)
+    if normalized_indexed_category and normalized_indexed_category != "default":
+        return normalized_indexed_category
+    return parse_catalog_category_from_stem(
+        image_path.stem,
+        category_names=candidate_categories,
+        extra_suffixes=[UNCERTAIN_CATEGORY],
+    )
+
+
+def _scan_classification_output(
+    output_root: Path,
+) -> tuple[list[tuple[Path, str]], list[str], list[str], dict[str, str]]:
+    saved_categories = _get_classification_category_names(include_uncertain=True)
+    index_items = _load_classification_index(output_root)
+    entries: list[tuple[Path, str]] = []
+    discovered_categories: list[str] = []
+    seen_categories: set[str] = set()
+    candidate_categories = _merge_classification_category_names(index_items.values(), saved_categories)
+
+    for image_path in sorted(
+        path for path in output_root.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".png"
+    ):
+        relative_path = image_path.relative_to(output_root).as_posix()
+        current_category = _get_classified_output_category(
+            image_path,
+            indexed_category=index_items.get(relative_path),
+            candidate_categories=candidate_categories,
+        )
+        if not current_category or current_category == "default":
+            continue
+
+        entries.append((image_path, current_category))
+        if current_category not in seen_categories:
+            seen_categories.add(current_category)
+            discovered_categories.append(current_category)
+            candidate_categories.append(current_category)
+
+    available_categories = _merge_classification_category_names(saved_categories, discovered_categories)
+    return entries, discovered_categories, available_categories, index_items
+
+
+def _normalize_classification_review_category(
+    raw_category: str | None,
+    *,
+    available_categories: list[str] | tuple[str, ...] | set[str] | None = None,
+    discovered_categories: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str:
+    normalized_available = _merge_classification_category_names(
+        available_categories or (),
+        _get_classification_category_names(include_uncertain=True),
+    )
+    normalized_discovered = _merge_classification_category_names(discovered_categories or ())
+    normalized = _normalize_classification_category_name(raw_category)
+
+    if not normalized or normalized == "default":
+        if normalized_discovered:
+            return normalized_discovered[0]
+        if normalized_available:
+            return normalized_available[0]
+        return UNCERTAIN_CATEGORY
+
+    if normalized not in normalized_available:
+        allowed_display = ", ".join(normalized_available)
+        raise ValueError(f"当前分类不在当前输出目录的可用分类中：{normalized}（允许值：{allowed_display}）")
     return normalized
 
 
-def _get_classified_output_category(image_path: Path) -> str:
-    return parse_catalog_category_from_stem(image_path.stem)
-
-
-def load_classify_review_data(output_dir: str | Path, category: str) -> dict:
+def load_classify_review_data(output_dir: str | Path, category: str | None = None) -> dict:
     output_root = Path(output_dir).expanduser().resolve()
     if not output_root.exists():
         raise FileNotFoundError(f"输出目录不存在：{output_root}")
     if not output_root.is_dir():
         raise NotADirectoryError(f"输出路径不是文件夹：{output_root}")
 
-    normalized_category = _normalize_classification_review_category(category)
-    allowed_categories = _get_classification_category_names(include_uncertain=True)
-    counts = {name: 0 for name in allowed_categories}
+    entries, discovered_categories, available_categories, _ = _scan_classification_output(output_root)
+    normalized_category = _normalize_classification_review_category(
+        category,
+        available_categories=available_categories,
+        discovered_categories=discovered_categories,
+    )
+    counts = {name: 0 for name in available_categories}
     items: list[dict] = []
 
-    for image_path in sorted(
-        path for path in output_root.rglob("*")
-        if path.is_file() and path.suffix.lower() == ".png"
-    ):
-        current_category = _get_classified_output_category(image_path)
-        if current_category not in counts:
-            continue
-
+    for image_path, current_category in entries:
+        counts.setdefault(current_category, 0)
         counts[current_category] += 1
         if current_category != normalized_category:
             continue
@@ -160,6 +309,7 @@ def load_classify_review_data(output_dir: str | Path, category: str) -> dict:
     return {
         "output_dir": str(output_root),
         "category": normalized_category,
+        "available_categories": available_categories,
         "items": items,
         "stats": {
             "counts": counts,
@@ -167,6 +317,146 @@ def load_classify_review_data(output_dir: str | Path, category: str) -> dict:
             "total": sum(counts.values()),
         },
     }
+
+
+def _mapping_label_sort_key(record: dict) -> tuple[int, str]:
+    return (-int(record.get("count", 0) or 0), str(record.get("source_label") or ""))
+
+
+def _build_classification_mapping_workspace(output_dir: str | Path) -> dict:
+    output_root = Path(output_dir).expanduser().resolve()
+    if not output_root.exists():
+        raise FileNotFoundError(f"输出目录不存在：{output_root}")
+    if not output_root.is_dir():
+        raise NotADirectoryError(f"输出路径不是文件夹：{output_root}")
+
+    entries, discovered_categories, _, _ = _scan_classification_output(output_root)
+    snapshot = load_directory_mapping_snapshot(output_root)
+    preset = load_global_mapping_preset()
+    counts: dict[str, int] = {}
+
+    for _, current_category in entries:
+        normalized_label = normalize_mapping_source_label(current_category)
+        if not normalized_label or normalized_label in {UNCERTAIN_CATEGORY, "error"}:
+            continue
+        counts[normalized_label] = counts.get(normalized_label, 0) + 1
+
+    source_labels = _merge_classification_category_names(discovered_categories, counts.keys())
+    buckets = {category: [] for category in MAPPING_TARGET_CATEGORIES}
+    unmapped_labels: list[dict] = []
+    source_label_items: list[dict] = []
+    mapped_images = 0
+    unmapped_images = 0
+
+    for source_label in source_labels:
+        if source_label in {UNCERTAIN_CATEGORY, "error"}:
+            continue
+        count = int(counts.get(source_label, 0) or 0)
+        if count <= 0:
+            continue
+
+        target_category, mapping_source = resolve_effective_target_category(
+            source_label,
+            output_root=output_root,
+            snapshot=snapshot,
+            preset=preset,
+        )
+        item = {
+            "source_label": source_label,
+            "count": count,
+            "target_category": target_category,
+            "mapping_source": mapping_source,
+            "is_identity": mapping_source == "identity",
+        }
+        source_label_items.append(item)
+        if target_category in buckets:
+            buckets[target_category].append(item)
+            mapped_images += count
+        else:
+            unmapped_labels.append(item)
+            unmapped_images += count
+
+    for category in MAPPING_TARGET_CATEGORIES:
+        buckets[category].sort(key=_mapping_label_sort_key)
+    unmapped_labels.sort(key=_mapping_label_sort_key)
+    source_label_items.sort(key=_mapping_label_sort_key)
+
+    return {
+        "output_dir": str(output_root),
+        "target_categories": list(MAPPING_TARGET_CATEGORIES),
+        "source_labels": source_label_items,
+        "unmapped_labels": unmapped_labels,
+        "buckets": buckets,
+        "summary": {
+            "total_images": sum(counts.values()),
+            "total_source_labels": len(source_label_items),
+            "mapped_source_labels": sum(len(items) for items in buckets.values()),
+            "unmapped_source_labels": len(unmapped_labels),
+            "mapped_images": mapped_images,
+            "unmapped_images": unmapped_images,
+        },
+    }
+
+
+def _list_classification_mapping_preview_items(
+    output_dir: str | Path,
+    source_label: str,
+    *,
+    limit: int = 18,
+) -> list[dict[str, str]]:
+    output_root = Path(output_dir).expanduser().resolve()
+    if not output_root.exists():
+        raise FileNotFoundError(f"输出目录不存在：{output_root}")
+    if not output_root.is_dir():
+        raise NotADirectoryError(f"输出路径不是文件夹：{output_root}")
+
+    normalized_source_label = normalize_mapping_source_label(source_label)
+    if not normalized_source_label or normalized_source_label in {UNCERTAIN_CATEGORY, "error"}:
+        raise ValueError("请选择有效的源标签")
+
+    entries, discovered_categories, _, _ = _scan_classification_output(output_root)
+    available_source_labels = set(_merge_classification_category_names(discovered_categories))
+    if normalized_source_label not in available_source_labels:
+        raise ValueError(f"当前目录中不存在该源标签：{normalized_source_label}")
+
+    items: list[dict[str, str]] = []
+    for image_path, current_category in entries:
+        if normalize_mapping_source_label(current_category) != normalized_source_label:
+            continue
+        items.append({
+            "file_name": image_path.name,
+            "image_path": str(image_path),
+            "relative_path": image_path.relative_to(output_root).as_posix(),
+        })
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _normalize_classification_mapping_payload(
+    output_root: Path,
+    raw_mappings: dict | None,
+) -> dict[str, str]:
+    if not isinstance(raw_mappings, dict):
+        raise ValueError("mappings 必须是对象")
+
+    workspace = _build_classification_mapping_workspace(output_root)
+    valid_source_labels = {
+        item["source_label"]
+        for item in workspace["source_labels"]
+        if item["source_label"] not in MAPPING_TARGET_CATEGORIES
+    }
+    normalized_mappings: dict[str, str] = {}
+
+    for raw_source_label, raw_target_category in raw_mappings.items():
+        source_label = normalize_mapping_source_label(raw_source_label)
+        if not source_label:
+            continue
+        if source_label not in valid_source_labels:
+            raise ValueError(f"当前目录中不存在可映射源标签：{source_label}")
+        normalized_mappings[source_label] = normalize_mapping_target_category(raw_target_category)
+
+    return dict(sorted(normalized_mappings.items()))
 
 
 def _format_number(value: float) -> int | float:
@@ -205,6 +495,17 @@ _clip_model = None
 _clip_device = None
 DEFAULT_CLASSIFY_THRESHOLD_STEP = 0.1
 UNCERTAIN_CATEGORY = "uncertain"
+CLASSIFY_BACKEND_CLIP = "clip"
+CLASSIFY_BACKEND_LOCAL_QWEN3_VL = "local_qwen3_vl"
+DEFAULT_CLASSIFY_BACKEND = CLASSIFY_BACKEND_CLIP
+SUPPORTED_CLASSIFY_BACKENDS = {
+    CLASSIFY_BACKEND_CLIP,
+    CLASSIFY_BACKEND_LOCAL_QWEN3_VL,
+}
+CLASSIFY_LOCAL_QWEN_MAX_IMAGE_SIDE = 1600
+CLASSIFY_LOCAL_QWEN_JPEG_QUALITY = 90
+CLASSIFICATION_INDEX_FILE_NAME = ".classification_index.json"
+CLASSIFICATION_INDEX_VERSION = 1
 
 _catalog_queue: queue.Queue = queue.Queue()
 _catalog_processing = False
@@ -228,6 +529,43 @@ DEFAULT_CATEGORIES = [
     {"name": "shelf",        "prompt": "a product photo of a bookshelf or display shelf or rack"},
     {"name": "other",        "prompt": "a product photo of a decorative home furniture item"},
 ]
+
+
+def _normalize_classify_backend(raw_backend: str | None) -> str:
+    normalized = str(raw_backend or "").strip().lower() or DEFAULT_CLASSIFY_BACKEND
+    if normalized not in SUPPORTED_CLASSIFY_BACKENDS:
+        supported = ", ".join(sorted(SUPPORTED_CLASSIFY_BACKENDS))
+        raise ValueError(f"分类后端必须是以下值之一：{supported}")
+    return normalized
+
+
+def _normalize_classification_categories(raw_categories: list[dict] | None) -> list[dict[str, str]]:
+    if not isinstance(raw_categories, list) or not raw_categories:
+        raise ValueError("请至少提供一个分类")
+
+    normalized_rows: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+
+    for row in raw_categories:
+        if not isinstance(row, dict):
+            raise ValueError("分类配置格式不正确")
+        raw_name = row.get("name")
+        name = _normalize_classification_category_name(raw_name)
+        prompt = str(row.get("prompt", "")).strip()
+
+        if not name or name == "default":
+            raise ValueError("分类名称不能为空")
+        if name == UNCERTAIN_CATEGORY:
+            raise ValueError("uncertain 为系统保留分类，不能直接作为自定义分类")
+        if not prompt:
+            raise ValueError(f"分类 {name} 缺少分类描述")
+        if name in seen_names:
+            raise ValueError(f"分类名称重复：{name}")
+
+        seen_names.add(name)
+        normalized_rows.append({"name": name, "prompt": prompt})
+
+    return normalized_rows
 
 # ──────────────────────────────────────────────────────────────────────────────
 # HTML 模板
@@ -1037,9 +1375,10 @@ def index():
 
 @app.route("/classify/categories", methods=["POST"])
 def save_categories():
-    cats = request.json or []
-    if not isinstance(cats, list) or not cats:
-        return {"error": "分类列表为空"}, 400
+    try:
+        cats = _normalize_classification_categories(request.json or [])
+    except Exception as exc:
+        return {"error": str(exc)}, 400
     CATEGORIES_FILE.write_text(json.dumps(cats, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"status": "saved", "count": len(cats)}
 
@@ -1132,13 +1471,30 @@ def start_classify():
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
     output_dir = data.get("output_dir", "").strip()
-    categories = data.get("categories", [])
+    backend = str(data.get("backend", DEFAULT_CLASSIFY_BACKEND)).strip().lower()
+    raw_categories = data.get("categories", [])
 
     try:
-        threshold = float(data.get("threshold", 0))
-        threshold_step = float(data.get("threshold_step", DEFAULT_CLASSIFY_THRESHOLD_STEP))
-    except (TypeError, ValueError):
-        return {"error": "置信度阈值和每轮降幅必须是合法数字"}, 400
+        backend = _normalize_classify_backend(backend)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+
+    try:
+        if backend == CLASSIFY_BACKEND_CLIP:
+            categories = _normalize_classification_categories(raw_categories)
+        else:
+            categories = _normalize_classification_categories(raw_categories) if raw_categories else []
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+
+    threshold = 0.0
+    threshold_step = DEFAULT_CLASSIFY_THRESHOLD_STEP
+    if backend == CLASSIFY_BACKEND_CLIP:
+        try:
+            threshold = float(data.get("threshold", 0))
+            threshold_step = float(data.get("threshold_step", DEFAULT_CLASSIFY_THRESHOLD_STEP))
+        except (TypeError, ValueError):
+            return {"error": "置信度阈值和每轮降幅必须是合法数字"}, 400
 
     raw_auto_retry_uncertain = data.get("auto_retry_uncertain", False)
     if isinstance(raw_auto_retry_uncertain, str):
@@ -1148,17 +1504,16 @@ def start_classify():
 
     if not input_dir or not output_dir:
         return {"error": "请填写输入和输出目录"}, 400
-    if not categories:
-        return {"error": "请至少提供一个分类"}, 400
-    if threshold < 0 or threshold > 1:
-        return {"error": "置信度阈值必须在 0 到 1 之间"}, 400
-    if threshold_step <= 0 or threshold_step > 1:
-        return {"error": "每轮降幅必须大于 0 且不超过 1"}, 400
+    if backend == CLASSIFY_BACKEND_CLIP:
+        if threshold < 0 or threshold > 1:
+            return {"error": "置信度阈值必须在 0 到 1 之间"}, 400
+        if threshold_step <= 0 or threshold_step > 1:
+            return {"error": "每轮降幅必须大于 0 且不超过 1"}, 400
 
     _drain(_classify_queue)
     threading.Thread(
         target=_run_classify,
-        args=(input_dir, output_dir, categories, threshold, auto_retry_uncertain, threshold_step),
+        args=(input_dir, output_dir, categories, backend, threshold, auto_retry_uncertain, threshold_step),
         daemon=True,
     ).start()
     return {"status": "started"}
@@ -1178,11 +1533,114 @@ def load_classify():
         return {"error": "请填写输出目录"}, 400
 
     try:
-        category = _normalize_classification_review_category(data.get("category", ""))
-        payload = load_classify_review_data(output_dir=output_dir, category=category)
+        payload = load_classify_review_data(output_dir=output_dir, category=data.get("category"))
     except Exception as exc:
         return {"error": str(exc)}, 400
     return payload
+
+
+@app.route("/classify/mapping/load", methods=["POST"])
+def load_classify_mapping():
+    data = request.json or {}
+    output_dir = data.get("output_dir", "").strip()
+
+    if not output_dir:
+        return {"error": "请填写分类输出目录"}, 400
+
+    try:
+        payload = _build_classification_mapping_workspace(output_dir)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+    return payload
+
+
+@app.route("/classify/mapping/preview", methods=["POST"])
+def preview_classify_mapping():
+    data = request.json or {}
+    output_dir = data.get("output_dir", "").strip()
+    source_label = data.get("source_label", "").strip()
+
+    if not output_dir:
+        return {"error": "请填写分类输出目录"}, 400
+    if not source_label:
+        return {"error": "请选择要预览的源标签"}, 400
+
+    try:
+        items = _list_classification_mapping_preview_items(output_dir, source_label)
+        normalized_source_label = normalize_mapping_source_label(source_label)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+
+    return {
+        "output_dir": str(Path(output_dir).expanduser().resolve()),
+        "source_label": normalized_source_label,
+        "items": items,
+    }
+
+
+@app.route("/classify/mapping/apply", methods=["POST"])
+def apply_classify_mapping():
+    data = request.json or {}
+    output_dir = data.get("output_dir", "").strip()
+
+    if not output_dir:
+        return {"error": "请填写分类输出目录"}, 400
+
+    try:
+        output_root = Path(output_dir).expanduser().resolve()
+        raw_mappings = data.get("mappings", {})
+        normalized_mappings = _normalize_classification_mapping_payload(output_root, raw_mappings)
+        previous_snapshot = load_directory_mapping_snapshot(output_root)
+        previous_preset = load_global_mapping_preset()
+
+        saved_snapshot = save_directory_mapping_snapshot(output_root, normalized_mappings)
+        merged_preset = dict(previous_preset)
+        merged_preset.update(saved_snapshot)
+        saved_preset = save_global_mapping_preset(merged_preset)
+
+        entries, _, _, _ = _scan_classification_output(output_root)
+        affected_image_count = 0
+        deleted_sidecar_count = 0
+        for image_path, source_label in entries:
+            normalized_source_label = normalize_mapping_source_label(source_label)
+            if not normalized_source_label or normalized_source_label in {UNCERTAIN_CATEGORY, "error"}:
+                continue
+
+            previous_target, _ = resolve_effective_target_category(
+                normalized_source_label,
+                output_root=output_root,
+                snapshot=previous_snapshot,
+                preset=previous_preset,
+            )
+            next_target, _ = resolve_effective_target_category(
+                normalized_source_label,
+                output_root=output_root,
+                snapshot=saved_snapshot,
+                preset=saved_preset,
+            )
+            if previous_target == next_target:
+                continue
+
+            affected_image_count += 1
+            sidecar_path = image_path.with_suffix(".json")
+            if sidecar_path.exists():
+                sidecar_path.unlink()
+                deleted_sidecar_count += 1
+
+        semantic_stats = rebuild_semantic_indices(output_root)
+        workspace = _build_classification_mapping_workspace(output_root)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
+
+    return {
+        "status": "applied",
+        "output_dir": str(output_root),
+        "mapping_count": len(saved_snapshot),
+        "affected_image_count": affected_image_count,
+        "deleted_sidecar_count": deleted_sidecar_count,
+        "stats": semantic_stats,
+        "workspace": workspace,
+    }
 
 
 @app.route("/classify/reassign", methods=["POST"])
@@ -1200,12 +1658,27 @@ def reassign_classify():
         return {"error": "请选择修正后的品类"}, 400
 
     try:
+        output_root = Path(output_dir).expanduser().resolve()
+        _, _, available_categories, index_items = _scan_classification_output(output_root)
         payload = reassign_semantic_review_item(
             input_dir=output_dir,
             image_path=image_path,
             target_category=target_category,
-            allowed_categories=_get_classification_category_names(include_uncertain=True),
+            allowed_categories=available_categories or _get_classification_category_names(include_uncertain=True),
+            normalize_category=normalize_catalog_token,
+            get_current_category=lambda path: _get_classified_output_category(
+                path,
+                indexed_category=index_items.get(path.resolve().relative_to(output_root).as_posix()),
+                candidate_categories=available_categories,
+            ),
         )
+        source_relative_path = Path(payload["source_image_path"]).resolve().relative_to(output_root).as_posix()
+        target_relative_path = Path(payload["target_image_path"]).resolve().relative_to(output_root).as_posix()
+        index_items.pop(source_relative_path, None)
+        index_items[target_relative_path] = payload["target_category"]
+        _save_classification_index(output_root, index_items)
+        _, _, next_available_categories, _ = _scan_classification_output(output_root)
+        payload["available_categories"] = next_available_categories
     except Exception as exc:
         return {"error": str(exc)}, 400
     return payload
@@ -1325,11 +1798,13 @@ def reassign_semantic():
         return {"error": "请选择修正后的品类"}, 400
 
     try:
+        input_root = Path(input_dir).expanduser().resolve()
+        _, _, available_categories, _ = _scan_classification_output(input_root)
         payload = reassign_semantic_review_item(
             input_dir=input_dir,
             image_path=image_path,
             target_category=target_category,
-            allowed_categories=_get_classification_category_names(include_uncertain=True),
+            allowed_categories=available_categories or _get_classification_category_names(include_uncertain=True),
         )
     except Exception as exc:
         return {"error": str(exc)}, 400
@@ -1669,6 +2144,7 @@ def _run_classify(
     input_dir: str,
     output_dir: str,
     categories: list[dict],
+    backend: str,
     threshold: float,
     auto_retry_uncertain: bool = False,
     threshold_step: float = DEFAULT_CLASSIFY_THRESHOLD_STEP,
@@ -1677,9 +2153,6 @@ def _run_classify(
 
     _classify_processing = True
     try:
-        import torch
-        from transformers import CLIPModel, CLIPProcessor
-
         inp = Path(input_dir).resolve()
         out = Path(output_dir).resolve()
 
@@ -1701,8 +2174,98 @@ def _run_classify(
             )})
             return
 
+        cat_names = [c["name"] for c in categories]
+        out.mkdir(parents=True, exist_ok=True)
+
+        if backend == CLASSIFY_BACKEND_LOCAL_QWEN3_VL:
+            input_index_items = _load_classification_index(inp)
+            output_index_items = _load_classification_index(out)
+            known_suffixes = _merge_classification_category_names(
+                cat_names,
+                input_index_items.values(),
+                output_index_items.values(),
+            )
+            _classify_queue.put({
+                "type": "start",
+                "backend": backend,
+                "total": len(images),
+            })
+            _classify_queue.put({
+                "type": "log",
+                "message": "正在使用本地 Qwen3-VL-8B-Instruct 做开放识别，结果会按原始识别直接落盘...",
+            })
+
+            stats: dict[str, int] = {"error": 0}
+            tasks = _build_classification_tasks(inp, images, known_suffixes)
+
+            for index, task in enumerate(tasks, start=1):
+                img_path = Path(task["source_path"])
+                try:
+                    result = _classify_with_local_qwen(
+                        image_path=img_path,
+                    )
+                    output_category = result["category"]
+                    dest_dir = out / Path(task["relative_dir"])
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest_path = dest_dir / _build_classified_name(
+                        base_stem=str(task["base_stem"]),
+                        category=output_category,
+                        suffix=str(task["suffix"]),
+                    )
+
+                    if img_path != dest_path:
+                        shutil.copy2(img_path, dest_path)
+
+                    output_relative_path = dest_path.relative_to(out).as_posix()
+                    output_index_items[output_relative_path] = output_category
+                    stats[output_category] = stats.get(output_category, 0) + 1
+                    _classify_queue.put({
+                        "type": "progress",
+                        "backend": backend,
+                        "current": index,
+                        "total": len(tasks),
+                        "file": img_path.name,
+                        "category": output_category,
+                        "raw_category": result["raw_category"],
+                        "reason": result["reason"],
+                        "output_path": str(dest_path),
+                        "output_relative_path": output_relative_path,
+                        "stats": dict(stats),
+                    })
+                except Exception as exc:
+                    stats["error"] = stats.get("error", 0) + 1
+                    _classify_queue.put({
+                        "type": "error_item",
+                        "backend": backend,
+                        "file": img_path.name,
+                        "message": str(exc),
+                    })
+                    _classify_queue.put({
+                        "type": "progress",
+                        "backend": backend,
+                        "current": index,
+                        "total": len(tasks),
+                        "file": img_path.name,
+                        "category": "error",
+                        "raw_category": "",
+                        "reason": "",
+                        "stats": dict(stats),
+                    })
+
+            _save_classification_index(out, output_index_items)
+            _classify_queue.put({
+                "type": "done",
+                "backend": backend,
+                "stats": dict(stats),
+            })
+            return
+
+        import torch
+        from transformers import CLIPModel, CLIPProcessor
+
         _classify_queue.put({
             "type": "start",
+            "backend": backend,
             "total": len(images),
             "threshold": threshold,
             "auto_retry_uncertain": auto_retry_uncertain,
@@ -1719,22 +2282,10 @@ def _run_classify(
             _clip_device = device
             _classify_queue.put({"type": "log", "message": f"模型加载完成，设备: {device}"})
 
-        cat_names = [c["name"] for c in categories]
         text_prompts = [c["prompt"] for c in categories]
         stats: dict[str, int] = {"error": 0}
-        out.mkdir(parents=True, exist_ok=True)
         current_assignments: dict[str, str] = {}
-        pending_tasks: list[dict] = [
-            {
-                "item_id": str(img_path.relative_to(inp).as_posix()),
-                "source_path": img_path,
-                "relative_dir": img_path.parent.relative_to(inp),
-                "base_stem": _strip_classification_suffix(img_path.stem, cat_names),
-                "suffix": img_path.suffix,
-                "from_output": False,
-            }
-            for img_path in images
-        ]
+        pending_tasks: list[dict] = _build_classification_tasks(inp, images, cat_names)
         current_threshold = threshold
         pass_index = 0
         scope = "all"
@@ -1804,6 +2355,7 @@ def _run_classify(
 
                     _classify_queue.put({
                         "type": "progress",
+                        "backend": backend,
                         "current": i,
                         "total": len(pending_tasks),
                         "file": img_path.name,
@@ -1818,6 +2370,7 @@ def _run_classify(
                     stats["error"] = stats.get("error", 0) + 1
                     _classify_queue.put({
                         "type": "error_item",
+                        "backend": backend,
                         "file": img_path.name,
                         "message": str(exc),
                         "pass_index": pass_index,
@@ -1825,6 +2378,7 @@ def _run_classify(
                     })
                     _classify_queue.put({
                         "type": "progress",
+                        "backend": backend,
                         "current": i,
                         "total": len(pending_tasks),
                         "file": img_path.name,
@@ -1854,6 +2408,7 @@ def _run_classify(
 
         _classify_queue.put({
             "type": "done",
+            "backend": backend,
             "stats": dict(stats),
             "passes": pass_index,
             "threshold": current_threshold,
@@ -1971,7 +2526,10 @@ def _select_clip_device(torch_module) -> str:
     return "cpu"
 
 
-def _strip_classification_suffix(stem: str, category_names: list[str]) -> str:
+def _strip_classification_suffix(
+    stem: str,
+    category_names: list[str] | tuple[str, ...] | set[str],
+) -> str:
     return strip_catalog_category_suffix(
         stem,
         category_names=category_names,
@@ -1981,6 +2539,201 @@ def _strip_classification_suffix(stem: str, category_names: list[str]) -> str:
 
 def _build_classified_name(base_stem: str, category: str, suffix: str) -> str:
     return build_classified_catalog_name(base_stem, category, suffix)
+
+
+def _get_local_qwen3_vl_url() -> str:
+    return str(
+        os.getenv("LOCAL_QWEN3_VL_URL", DEFAULT_LOCAL_QWEN3_VL_URL)
+        or DEFAULT_LOCAL_QWEN3_VL_URL
+    ).rstrip("/")
+
+
+def _image_path_to_local_qwen_data_url(
+    image_path: Path,
+    *,
+    max_image_side: int = CLASSIFY_LOCAL_QWEN_MAX_IMAGE_SIDE,
+    jpeg_quality: int = CLASSIFY_LOCAL_QWEN_JPEG_QUALITY,
+) -> str:
+    with Image.open(image_path) as image:
+        white_rgb = _to_white_rgb(image)
+        if max(white_rgb.size) > max_image_side:
+            scale = max_image_side / max(white_rgb.size)
+            resized = white_rgb.resize(
+                (
+                    max(1, int(round(white_rgb.width * scale))),
+                    max(1, int(round(white_rgb.height * scale))),
+                ),
+                Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS,
+            )
+        else:
+            resized = white_rgb
+
+        buffer = io.BytesIO()
+        resized.save(buffer, format="JPEG", quality=jpeg_quality, optimize=True)
+        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{encoded}"
+
+
+def _parse_model_json_object(text: str) -> dict:
+    if not isinstance(text, str):
+        raise ValueError("模型返回结果不是文本")
+
+    candidate = text.strip()
+    if not candidate:
+        raise ValueError("模型返回空内容")
+
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        candidate = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    start = candidate.find("{")
+    if start == -1:
+        raise ValueError("模型返回中未找到 JSON 对象")
+
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(candidate)):
+        char = candidate[index]
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                snippet = candidate[start:index + 1]
+                parsed = json.loads(snippet)
+                if not isinstance(parsed, dict):
+                    raise ValueError("模型返回的 JSON 不是对象")
+                return parsed
+
+    raise ValueError("模型返回的 JSON 不完整")
+
+
+def _call_local_qwen3_vl_generate(
+    *,
+    image_data_url: str,
+    prompt: str,
+    model: str = LOCAL_QWEN3_VL_MODEL,
+) -> str:
+    payload = json.dumps({
+        "image_data_url": image_data_url,
+        "prompt": prompt,
+        "model": model,
+    }).encode("utf-8")
+    service_url = f"{_get_local_qwen3_vl_url()}/generate"
+    request = urllib.request.Request(
+        service_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=LOCAL_QWEN3_VL_TIMEOUT_SECONDS) as response:
+            response_body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"local_qwen3_vl service returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Unable to reach local_qwen3_vl service at {service_url}: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"local_qwen3_vl service timed out after {LOCAL_QWEN3_VL_TIMEOUT_SECONDS} seconds"
+        ) from exc
+
+    try:
+        data = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("local_qwen3_vl service returned invalid JSON") from exc
+
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("local_qwen3_vl service returned empty text")
+    return text
+
+
+def _build_local_qwen_classify_prompt() -> str:
+    return (
+        "请分析这张透明背景的单件家具产品图。\n\n"
+        "请严格输出一个 JSON 对象，不要输出 markdown，不要输出解释，不要输出任何 JSON 之外的内容。\n"
+        "JSON 字段必须且只能包含：\n"
+        "{\n"
+        '  "raw_category": "...",\n'
+        '  "reason": "..."\n'
+        "}\n\n"
+        "规则：\n"
+        "1. raw_category 必须输出一个简短、稳定、适合文件名的英文家具类型标识，优先使用单数 snake_case，例如 armchair、chaise_lounge、loveseat。\n"
+        "2. 不要把 raw_category 写成句子、多个候选、斜杠并列、带括号说明，尽量只保留一个最准确的家具类型。\n"
+        "3. reason 用一句简短中文说明你的判断依据。\n"
+        "4. 不要发明额外字段，也不要输出多个候选。"
+    )
+
+
+def _classify_with_local_qwen(
+    *,
+    image_path: Path,
+) -> dict[str, str]:
+    prompt = _build_local_qwen_classify_prompt()
+    image_data_url = _image_path_to_local_qwen_data_url(image_path)
+    raw_response = _call_local_qwen3_vl_generate(
+        image_data_url=image_data_url,
+        prompt=prompt,
+        model=LOCAL_QWEN3_VL_MODEL,
+    )
+    payload = _parse_model_json_object(raw_response)
+
+    raw_category = str(payload.get("raw_category") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    normalized_category = normalize_catalog_token(raw_category)
+    if not raw_category:
+        raise ValueError("raw_category 不能为空")
+    if not normalized_category or normalized_category == "default":
+        raise ValueError(f"raw_category 无法规范化为合法文件名后缀：{raw_category}")
+    return {
+        "raw_category": raw_category,
+        "category": normalized_category,
+        "reason": reason,
+    }
+
+
+def _build_classification_tasks(
+    input_root: Path,
+    images: list[Path],
+    category_names: list[str] | tuple[str, ...] | set[str],
+) -> list[dict]:
+    return [
+        {
+            "item_id": str(img_path.relative_to(input_root).as_posix()),
+            "source_path": img_path,
+            "relative_dir": img_path.parent.relative_to(input_root),
+            "base_stem": _strip_classification_suffix(img_path.stem, category_names),
+            "suffix": img_path.suffix,
+            "from_output": False,
+        }
+        for img_path in images
+    ]
 
 
 def _drain(q: queue.Queue) -> None:

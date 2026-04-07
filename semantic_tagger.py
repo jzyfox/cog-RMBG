@@ -20,6 +20,12 @@ from asset_catalog_grid import (
     parse_catalog_category_from_stem,
     strip_catalog_category_suffix,
 )
+from classification_mapping import (
+    get_mapped_semantic_category,
+    load_classification_index,
+    load_directory_mapping_snapshot,
+    load_global_mapping_preset,
+)
 
 ProgressCallback = Callable[[dict], None]
 
@@ -278,6 +284,7 @@ def build_semantic_tags(
     runtime_model = _get_semantic_runtime_model(model)
     sleep_seconds = _coerce_sleep_seconds(sleep_seconds)
     max_retries = _coerce_max_retries(max_retries)
+    mapping_context = _load_semantic_mapping_context(input_root)
 
     if not input_root.exists():
         raise FileNotFoundError(f"输入目录不存在：{input_root}")
@@ -313,6 +320,9 @@ def build_semantic_tags(
                     existing,
                     image_path=image_path,
                     input_root=input_root,
+                    index_items=mapping_context["index_items"],
+                    snapshot=mapping_context["snapshot"],
+                    preset=mapping_context["preset"],
                 )
                 if existing != normalized:
                     _write_sidecar(sidecar_path, normalized)
@@ -339,6 +349,9 @@ def build_semantic_tags(
                 backend=backend,
                 sleep_seconds=sleep_seconds,
                 max_retries=max_retries,
+                index_items=mapping_context["index_items"],
+                snapshot=mapping_context["snapshot"],
+                preset=mapping_context["preset"],
             )
             _write_sidecar(sidecar_path, record)
             stats["tagged"] += 1
@@ -391,6 +404,7 @@ def load_semantic_review_data(
 ) -> dict:
     input_root = Path(input_dir).expanduser().resolve()
     category = _normalize_target_category(category)
+    mapping_context = _load_semantic_mapping_context(input_root)
 
     if not input_root.exists():
         raise FileNotFoundError(f"输入目录不存在：{input_root}")
@@ -402,7 +416,13 @@ def load_semantic_review_data(
     stats = {"valid": 0, "invalid": 0, "missing": 0}
 
     for image_path in images:
-        item = _build_review_item(input_root, image_path)
+        item = _build_review_item(
+            input_root,
+            image_path,
+            index_items=mapping_context["index_items"],
+            snapshot=mapping_context["snapshot"],
+            preset=mapping_context["preset"],
+        )
         stats[item["status"]] += 1
         items.append(item)
 
@@ -421,6 +441,7 @@ def save_semantic_review_items(
 ) -> dict:
     input_root = Path(input_dir).expanduser().resolve()
     category = _normalize_target_category(category)
+    mapping_context = _load_semantic_mapping_context(input_root)
 
     if not input_root.exists():
         raise FileNotFoundError(f"输入目录不存在：{input_root}")
@@ -436,7 +457,13 @@ def save_semantic_review_items(
             raise ValueError("每个保存项都必须是对象")
 
         image_path = _resolve_item_image_path(item=item, input_root=input_root)
-        if _parse_category_from_stem(image_path.stem) != category:
+        if _get_image_category(
+            image_path,
+            input_root,
+            index_items=mapping_context["index_items"],
+            snapshot=mapping_context["snapshot"],
+            preset=mapping_context["preset"],
+        ) != category:
             raise ValueError(f"仅允许保存 {category} 图片：{image_path.name}")
 
         raw_tag_data = item.get("tag_data", item)
@@ -459,9 +486,18 @@ def save_semantic_review_items(
             input_root=input_root,
             vlm_model=existing_vlm_model,
             refresh_updated_at=True,
+            index_items=mapping_context["index_items"],
+            snapshot=mapping_context["snapshot"],
+            preset=mapping_context["preset"],
         )
         _write_sidecar(existing_sidecar, record)
-        saved_items.append(_build_review_item(input_root, image_path))
+        saved_items.append(_build_review_item(
+            input_root,
+            image_path,
+            index_items=mapping_context["index_items"],
+            snapshot=mapping_context["snapshot"],
+            preset=mapping_context["preset"],
+        ))
 
     index_stats = rebuild_semantic_indices(input_root)
     return {
@@ -477,6 +513,8 @@ def reassign_semantic_review_item(
     image_path: str | Path,
     target_category: str,
     allowed_categories: list[str] | tuple[str, ...] | set[str],
+    normalize_category: Callable[[Any], str] | None = None,
+    get_current_category: Callable[[Path], str] | None = None,
 ) -> dict[str, Any]:
     input_root = Path(input_dir).expanduser().resolve()
     if not input_root.exists():
@@ -485,8 +523,13 @@ def reassign_semantic_review_item(
         raise NotADirectoryError(f"输入路径不是文件夹：{input_root}")
 
     source_image_path = _resolve_existing_png_path(image_path, input_root)
-    previous_category = _get_image_category(source_image_path)
-    normalized_target_category = _normalize_reassign_target_category(target_category, allowed_categories)
+    current_category_getter = get_current_category or (lambda path: _get_image_category(path, input_root))
+    previous_category = current_category_getter(source_image_path)
+    normalized_target_category = _normalize_reassign_target_category(
+        target_category,
+        allowed_categories,
+        normalize_category=normalize_category,
+    )
 
     if normalized_target_category == previous_category:
         raise ValueError(f"当前图片已经是 {previous_category}，无需重复修改")
@@ -542,6 +585,7 @@ def rebuild_semantic_indices(
     input_root = Path(input_dir).expanduser().resolve()
     if category not in (None, ""):
         _normalize_target_category(category)
+    mapping_context = _load_semantic_mapping_context(input_root)
 
     valid_records: list[dict[str, Any]] = []
     error_records: list[dict[str, Any]] = []
@@ -553,6 +597,9 @@ def rebuild_semantic_indices(
                 image_path=image_path,
                 input_root=input_root,
                 status="missing",
+                index_items=mapping_context["index_items"],
+                snapshot=mapping_context["snapshot"],
+                preset=mapping_context["preset"],
                 message="未找到同名语义标签 JSON",
             ))
             continue
@@ -563,6 +610,9 @@ def rebuild_semantic_indices(
                 record,
                 image_path=image_path,
                 input_root=input_root,
+                index_items=mapping_context["index_items"],
+                snapshot=mapping_context["snapshot"],
+                preset=mapping_context["preset"],
             )
             if record != normalized:
                 _write_sidecar(sidecar_path, normalized)
@@ -572,6 +622,9 @@ def rebuild_semantic_indices(
                 image_path=image_path,
                 input_root=input_root,
                 status="invalid",
+                index_items=mapping_context["index_items"],
+                snapshot=mapping_context["snapshot"],
+                preset=mapping_context["preset"],
                 message=str(exc),
             ))
 
@@ -591,12 +644,30 @@ def discover_semantic_images(
 ) -> list[Path]:
     input_root = Path(input_dir).expanduser().resolve()
     normalized_category = None if category in (None, "") else _normalize_target_category(category)
+    index_items = load_classification_index(input_root)
+    snapshot = load_directory_mapping_snapshot(input_root)
+    preset = load_global_mapping_preset()
     return sorted(
         path
         for path in input_root.rglob("*.png")
         if path.is_file()
-        and _parse_category_from_stem(path.stem) in SUPPORTED_SEMANTIC_CATEGORY_SET
-        and (normalized_category is None or _parse_category_from_stem(path.stem) == normalized_category)
+        and _resolve_image_category(
+            path,
+            input_root,
+            index_items=index_items,
+            snapshot=snapshot,
+            preset=preset,
+        ) in SUPPORTED_SEMANTIC_CATEGORY_SET
+        and (
+            normalized_category is None
+            or _resolve_image_category(
+                path,
+                input_root,
+                index_items=index_items,
+                snapshot=snapshot,
+                preset=preset,
+            ) == normalized_category
+        )
     )
 
 
@@ -608,6 +679,10 @@ def _tag_single_image(
     backend: str,
     sleep_seconds: float,
     max_retries: int,
+    *,
+    index_items: dict[str, str] | None = None,
+    snapshot: dict[str, str] | None = None,
+    preset: dict[str, str] | None = None,
 ) -> dict:
     last_error: Exception | None = None
     prompt = _build_prompt(category)
@@ -631,6 +706,9 @@ def _tag_single_image(
                 input_root=input_root,
                 vlm_model=runtime_model,
                 refresh_updated_at=True,
+                index_items=index_items,
+                snapshot=snapshot,
+                preset=preset,
             )
         except Exception as exc:
             last_error = exc
@@ -775,12 +853,25 @@ def _image_path_to_data_url(
         return f"data:image/jpeg;base64,{encoded}"
 
 
-def _build_review_item(input_root: Path, image_path: Path) -> dict[str, Any]:
+def _build_review_item(
+    input_root: Path,
+    image_path: Path,
+    *,
+    index_items: dict[str, str] | None = None,
+    snapshot: dict[str, str] | None = None,
+    preset: dict[str, str] | None = None,
+) -> dict[str, Any]:
     json_path = image_path.with_suffix(".json")
     raw_data = None
     error_message = None
     status = "missing"
-    tag_data = _build_review_draft(image_path=image_path, input_root=input_root)
+    tag_data = _build_review_draft(
+        image_path=image_path,
+        input_root=input_root,
+        index_items=index_items,
+        snapshot=snapshot,
+        preset=preset,
+    )
 
     if json_path.exists():
         try:
@@ -789,6 +880,9 @@ def _build_review_item(input_root: Path, image_path: Path) -> dict[str, Any]:
                 raw_data,
                 image_path=image_path,
                 input_root=input_root,
+                index_items=index_items,
+                snapshot=snapshot,
+                preset=preset,
             )
             if raw_data != validated:
                 _write_sidecar(json_path, validated)
@@ -801,6 +895,9 @@ def _build_review_item(input_root: Path, image_path: Path) -> dict[str, Any]:
                 image_path=image_path,
                 input_root=input_root,
                 raw_data=raw_data,
+                index_items=index_items,
+                snapshot=snapshot,
+                preset=preset,
             )
 
     return {
@@ -817,8 +914,18 @@ def _build_review_draft(
     image_path: Path,
     input_root: Path,
     raw_data: Any | None = None,
+    *,
+    index_items: dict[str, str] | None = None,
+    snapshot: dict[str, str] | None = None,
+    preset: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    category = _get_image_category(image_path)
+    category = _get_image_category(
+        image_path,
+        input_root,
+        index_items=index_items,
+        snapshot=snapshot,
+        preset=preset,
+    )
     metadata = _build_metadata(image_path=image_path, input_root=input_root)
     payload = raw_data if isinstance(raw_data, dict) else {}
 
@@ -867,11 +974,21 @@ def _validate_semantic_record(
     vlm_model: str | None = None,
     prompt_version: str | None = None,
     refresh_updated_at: bool = False,
+    *,
+    index_items: dict[str, str] | None = None,
+    snapshot: dict[str, str] | None = None,
+    preset: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("标签 JSON 必须是对象")
 
-    category = _get_image_category(image_path)
+    category = _get_image_category(
+        image_path,
+        input_root,
+        index_items=index_items,
+        snapshot=snapshot,
+        preset=preset,
+    )
     _validate_raw_field_names(raw, category)
 
     raw_category = raw.get("category")
@@ -1011,8 +1128,49 @@ def _get_category_definition(category: str) -> dict[str, Any]:
     return SEMANTIC_CATEGORY_DEFINITIONS[normalized]
 
 
-def _get_image_category(image_path: Path) -> str:
-    category = _parse_category_from_stem(image_path.stem)
+def _load_semantic_mapping_context(input_root: str | Path) -> dict[str, dict[str, str]]:
+    resolved_root = Path(input_root).expanduser().resolve()
+    return {
+        "index_items": load_classification_index(resolved_root),
+        "snapshot": load_directory_mapping_snapshot(resolved_root),
+        "preset": load_global_mapping_preset(),
+    }
+
+
+def _resolve_image_category(
+    image_path: str | Path,
+    input_root: str | Path,
+    *,
+    index_items: dict[str, str] | None = None,
+    snapshot: dict[str, str] | None = None,
+    preset: dict[str, str] | None = None,
+) -> str | None:
+    resolved_root = Path(input_root).expanduser().resolve()
+    resolved_image = Path(image_path).expanduser().resolve()
+    return get_mapped_semantic_category(
+        resolved_image,
+        resolved_root,
+        index_items=index_items,
+        snapshot=snapshot,
+        preset=preset,
+    )
+
+
+def _get_image_category(
+    image_path: Path,
+    input_root: Path,
+    *,
+    index_items: dict[str, str] | None = None,
+    snapshot: dict[str, str] | None = None,
+    preset: dict[str, str] | None = None,
+) -> str:
+    category = _resolve_image_category(
+        image_path,
+        input_root,
+        index_items=index_items,
+        snapshot=snapshot,
+        preset=preset,
+    )
     if category not in SUPPORTED_SEMANTIC_CATEGORY_SET:
         raise ValueError(f"当前语义标签不支持该图片类别：{image_path.name}")
     return category
@@ -1129,10 +1287,20 @@ def _build_error_record(
     input_root: Path,
     status: str,
     message: str,
+    *,
+    index_items: dict[str, str] | None = None,
+    snapshot: dict[str, str] | None = None,
+    preset: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
         **_build_metadata(image_path=image_path, input_root=input_root),
-        "category": _get_image_category(image_path),
+        "category": _get_image_category(
+            image_path,
+            input_root,
+            index_items=index_items,
+            snapshot=snapshot,
+            preset=preset,
+        ),
         "status": status,
         "message": message,
         "updated_at": _now_iso(),
@@ -1194,7 +1362,9 @@ def _resolve_existing_png_path(path_value: str | Path, input_root: Path) -> Path
 def _normalize_reassign_target_category(
     target_category: Any,
     allowed_categories: list[str] | tuple[str, ...] | set[str],
+    normalize_category: Callable[[Any], str] | None = None,
 ) -> str:
+    normalizer = normalize_category or normalize_catalog_type
     normalized_allowed: list[str] = []
     seen: set[str] = set()
     for value in allowed_categories:
@@ -1202,7 +1372,7 @@ def _normalize_reassign_target_category(
         if not normalized:
             continue
         if normalized != UNCERTAIN_CATEGORY:
-            normalized = normalize_catalog_type(normalized)
+            normalized = normalizer(normalized)
         if not normalized or normalized == "default" or normalized in seen:
             continue
         seen.add(normalized)
@@ -1215,7 +1385,7 @@ def _normalize_reassign_target_category(
     if not normalized_target:
         raise ValueError("请选择修正后的品类")
     if normalized_target != UNCERTAIN_CATEGORY:
-        normalized_target = normalize_catalog_type(normalized_target)
+        normalized_target = normalizer(normalized_target)
 
     if normalized_target not in seen:
         allowed_display = ", ".join(normalized_allowed)

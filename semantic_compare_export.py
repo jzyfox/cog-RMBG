@@ -26,11 +26,15 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 REPORT_MIMETYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 REPORT_SHEET_NAME = "对比结果"
 THUMBNAIL_SIZE = (180, 180)
+HEADER_FONT_SIZE = 12
+DATA_FONT_SIZE = 12
 
 COLOR_RED = "FFFF0000"
 COLOR_YELLOW = "FFFFC000"
 HEADER_FILL = PatternFill("solid", fgColor="D1D5DB")
 ERROR_ROW_FILL = PatternFill("solid", fgColor="FEF2F2")
+
+RichSegment = tuple[str, str | None, bool]
 
 DISPLAY_FIELDS: list[tuple[str, str]] = [
     ("category", "品类"),
@@ -450,8 +454,8 @@ def _build_exception_report_row_from_meta(exception_meta: dict[str, str]) -> Rep
         local_display=str(exception_meta.get("local_display", "")),
         difference_display=_make_multiline_rich_text(
             [
-                [(f"异常: {exception_meta.get('type', '')}", COLOR_RED)],
-                [(str(exception_meta.get("message", "")), COLOR_RED)],
+                [(f"异常: {exception_meta.get('type', '')}", COLOR_RED, False)],
+                [(str(exception_meta.get("message", "")), COLOR_RED, False)],
             ]
         ),
         is_exception=True,
@@ -624,7 +628,7 @@ def _compare_display_values(online_value: str, local_value: str) -> str:
 
 
 def _build_side_rich_text(field_results: list[dict[str, str]], side: str) -> CellRichText:
-    lines: list[list[tuple[str, str | None]]] = []
+    lines: list[list[RichSegment]] = []
     for item in field_results:
         color = _get_side_color(item["status"], side)
         line = f'{item["field_label"]}: {item["online_value"] if side == "online" else item["local_value"] or "-"}'
@@ -632,7 +636,7 @@ def _build_side_rich_text(field_results: list[dict[str, str]], side: str) -> Cel
             line = f'{item["field_label"]}: -'
         if side == "local" and not item["local_value"]:
             line = f'{item["field_label"]}: -'
-        lines.append([(line, color)])
+        lines.append([(line, color, bool(color))])
     return _make_multiline_rich_text(lines)
 
 
@@ -661,59 +665,57 @@ def _build_difference_rich_text(field_results: list[dict[str, str]]) -> str | Ce
     if not missing_fields and not different_fields:
         return "一致"
 
-    lines: list[list[tuple[str, str | None]]] = []
+    lines: list[list[RichSegment]] = []
     if missing_fields:
-        line: list[tuple[str, str | None]] = [("缺失：", None)]
+        line: list[RichSegment] = [("缺失：", None, False)]
         line.extend(_join_label_segments(missing_fields, COLOR_RED))
         lines.append(line)
     if different_fields:
-        line = [("不同：", None)]
+        line = [("不同：", None, False)]
         line.extend(_join_label_segments(different_fields, COLOR_YELLOW))
         lines.append(line)
     return _make_multiline_rich_text(lines)
 
 
-def _join_label_segments(labels: list[str], color: str) -> list[tuple[str, str | None]]:
-    segments: list[tuple[str, str | None]] = []
+def _join_label_segments(labels: list[str], color: str) -> list[RichSegment]:
+    segments: list[RichSegment] = []
     for index, label in enumerate(labels):
         if index > 0:
-            segments.append(("、", None))
-        segments.append((label, color))
+            segments.append(("、", None, False))
+        segments.append((label, color, True))
     return segments
 
 
-def _make_rich_text(segments: list[tuple[str, str | None]]) -> CellRichText:
+def _make_rich_text(segments: list[RichSegment]) -> CellRichText:
     rich = CellRichText()
-    for text, color in segments:
+    for text, color, bold in segments:
         if not text:
             continue
-        if color:
-            rich.append(TextBlock(InlineFont(color=color), text))
-        else:
-            rich.append(text)
+        rich.append(TextBlock(_build_inline_font(color=color, bold=bold), text))
     return rich
 
 
-def _make_multiline_rich_text(lines: list[list[tuple[str, str | None]]]) -> CellRichText:
+def _make_multiline_rich_text(lines: list[list[RichSegment]]) -> CellRichText:
     rich = CellRichText()
     visible_line_index = 0
-    total_visible_lines = sum(1 for line in lines if any(text for text, _ in line))
+    total_visible_lines = sum(1 for line in lines if any(text for text, _, _ in line))
 
     for line in lines:
-        visible_segments = [(text, color) for text, color in line if text]
+        visible_segments = [(text, color, bold) for text, color, bold in line if text]
         if not visible_segments:
             continue
 
         visible_line_index += 1
         is_last_line = visible_line_index == total_visible_lines
-        for segment_index, (text, color) in enumerate(visible_segments):
+        for segment_index, (text, color, bold) in enumerate(visible_segments):
             is_last_segment = segment_index == len(visible_segments) - 1
             segment_text = text if is_last_line or not is_last_segment else f"{text}\n"
-            if color:
-                rich.append(TextBlock(InlineFont(color=color), segment_text))
-            else:
-                rich.append(segment_text)
+            rich.append(TextBlock(_build_inline_font(color=color, bold=bold), segment_text))
     return rich
+
+
+def _build_inline_font(*, color: str | None = None, bold: bool = False) -> InlineFont:
+    return InlineFont(color=color, sz=DATA_FONT_SIZE, b=bold)
 
 
 def _build_report_sheet(sheet, rows: list[ReportRow], image_refs: list[io.BytesIO]) -> None:
@@ -757,13 +759,14 @@ def _build_report_sheet(sheet, rows: list[ReportRow], image_refs: list[io.BytesI
 
 def _style_header_row(sheet, row_index: int) -> None:
     for cell in sheet[row_index]:
-        cell.font = Font(bold=True)
+        cell.font = Font(bold=True, size=HEADER_FONT_SIZE)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.fill = HEADER_FILL
 
 
 def _style_data_row(sheet, row_index: int) -> None:
     for col in ("A", "B", "D", "E", "F"):
+        sheet[f"{col}{row_index}"].font = Font(size=DATA_FONT_SIZE)
         sheet[f"{col}{row_index}"].alignment = Alignment(vertical="top", wrap_text=True)
     sheet[f"C{row_index}"].alignment = Alignment(horizontal="center", vertical="center")
 
@@ -774,7 +777,7 @@ def _estimate_row_height(row: ReportRow) -> float:
         _count_explicit_lines(row.local_display),
         _count_explicit_lines(row.difference_display),
     )
-    return max(72.0, min(180.0, 16.0 * max_lines + 12.0))
+    return max(76.0, min(196.0, 18.0 * max_lines + 16.0))
 
 
 def _count_explicit_lines(value: str | CellRichText) -> int:

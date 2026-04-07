@@ -75,6 +75,7 @@
     <button id="tab-clean-btn" onclick="switchTab('clean')" class="tab-btn active text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">Hero 清洗</button>
     <button id="tab-rmbg-btn" onclick="switchTab('rmbg')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">批量抠图</button>
     <button id="tab-classify-btn" onclick="switchTab('classify')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">图片分类</button>
+    <button id="tab-mapping-btn" onclick="switchTab('mapping')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">分类映射</button>
     <button id="tab-semantic-btn" onclick="switchTab('semantic')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">语义标签</button>
     <button id="tab-bundle-btn" onclick="switchTab('bundle')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">自动组套</button>
     <button id="tab-catalog-btn" onclick="switchTab('catalog')" class="tab-btn text-xs px-4 py-1.5 rounded-lg border border-gray-700 text-gray-300">资产拼图</button>
@@ -160,7 +161,7 @@
 
   <div id="panel-classify" class="hidden flex flex-col gap-5">
     <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
-      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">目录设置</h2>
+      <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">分类设置</h2>
       <div class="flex flex-col gap-1.5">
         <label class="text-sm text-gray-300">输入文件夹 <span class="text-gray-600">（待分类的透明 PNG）</span></label>
         <input id="cl-input-dir" type="text" placeholder="例如：J:/rmbg_output" />
@@ -169,24 +170,37 @@
         <label class="text-sm text-gray-300">输出文件夹 <span class="text-gray-600">（子文件夹将自动创建在这里）</span></label>
         <input id="cl-output-dir" type="text" placeholder="例如：J:/classified_assets" />
       </div>
-      <div class="flex flex-col gap-2">
-        <div class="flex justify-between">
-          <label class="text-sm text-gray-300">置信度阈值</label>
-          <span id="threshold-label" class="text-sm text-indigo-400 font-mono">0%（不过滤）</span>
-        </div>
-        <input id="cl-threshold" type="range" min="0" max="95" step="5" value="0" oninput="updateThresholdLabel(this.value)" class="w-full h-1.5 rounded-full" />
-        <p class="text-xs text-gray-600">分类结果会写入输出目录镜像结构，文件名末尾追加 <span class="text-gray-400">_&lt;category&gt;</span> 或 <span class="text-gray-400">_uncertain</span>。</p>
+      <div class="flex flex-col gap-1.5">
+        <label class="text-sm text-gray-300">分类后端</label>
+        <select id="cl-backend" onchange="updateClassifyBackendUI()">
+          <option value="clip">CLIP</option>
+          <option value="local_qwen3_vl">本地 Qwen3-VL-8B-Instruct</option>
+        </select>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-[1fr_180px] gap-3 items-end">
-        <label class="flex items-center gap-2 text-sm text-gray-300 min-h-[42px]">
-          <input id="cl-auto-retry-uncertain" type="checkbox" class="w-4 h-4 rounded border-gray-700 bg-gray-950 text-violet-500" />
-          <span>自动继续处理 uncertain</span>
-        </label>
-        <div class="flex flex-col gap-1.5">
-          <label class="text-sm text-gray-300">每轮降幅（%）</label>
-          <input id="cl-threshold-step" type="number" min="1" max="100" step="5" value="{{ default_classify_threshold_step }}" />
+      <div id="cl-backend-note" class="text-xs text-gray-500 leading-6 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3">
+        CLIP 模式会在当前分类配置里做闭集匹配，并支持阈值、uncertain 和多轮降阈值复跑。
+      </div>
+      <div id="cl-clip-settings" class="flex flex-col gap-3">
+        <div class="flex flex-col gap-2">
+          <div class="flex justify-between">
+            <label class="text-sm text-gray-300">置信度阈值</label>
+            <span id="threshold-label" class="text-sm text-indigo-400 font-mono">0%（不过滤）</span>
+          </div>
+          <input id="cl-threshold" type="range" min="0" max="95" step="5" value="0" oninput="updateThresholdLabel(this.value)" class="w-full h-1.5 rounded-full" />
+          <p class="text-xs text-gray-600">低于阈值的图片会归入 <span class="text-gray-400">uncertain</span>，并可继续按每轮降幅重复处理。</p>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-[1fr_180px] gap-3 items-end">
+          <label class="flex items-center gap-2 text-sm text-gray-300 min-h-[42px]">
+            <input id="cl-auto-retry-uncertain" type="checkbox" class="w-4 h-4 rounded border-gray-700 bg-gray-950 text-violet-500" />
+            <span>自动继续处理 uncertain</span>
+          </label>
+          <div class="flex flex-col gap-1.5">
+            <label class="text-sm text-gray-300">每轮降幅（%）</label>
+            <input id="cl-threshold-step" type="number" min="1" max="100" step="5" value="{{ default_classify_threshold_step }}" />
+          </div>
         </div>
       </div>
+      <p class="text-xs text-gray-600">分类结果会写入输出目录镜像结构；CLIP 会追加 <span class="text-gray-400">_&lt;category&gt;</span> / <span class="text-gray-400">_uncertain</span>，本地 Qwen 会直接追加模型原始识别的规范化后缀。</p>
     </div>
     <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-3">
       <div class="flex items-center justify-between">
@@ -198,7 +212,7 @@
       </div>
       <div class="grid grid-cols-[160px_1fr_32px] gap-2 px-1">
         <span class="text-xs text-gray-600">文件夹名称</span>
-        <span class="text-xs text-gray-600">CLIP 文本描述（英文，越具体越准）</span>
+        <span class="text-xs text-gray-600">分类描述（可中英混合，尽量具体）</span>
         <span></span>
       </div>
       <div id="category-rows" class="flex flex-col gap-2"></div>
@@ -238,6 +252,14 @@
         <div class="bg-gray-800 rounded-xl p-3 text-center"><div id="cl-review-total" class="text-2xl font-bold text-gray-100">0</div><div class="text-xs text-gray-500 mt-1">目录总数</div></div>
       </div>
 
+      <div id="cl-review-tags-card" class="hidden bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">分类导航</div>
+          <div class="text-xs text-gray-500">按数量从多到少排序，点击可直接切换到对应分类</div>
+        </div>
+        <div id="cl-review-tags" class="flex flex-wrap gap-2 min-h-[2rem]"></div>
+      </div>
+
       <div class="bg-gray-950 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
         <div class="flex items-center justify-between gap-3 flex-wrap">
           <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">结果列表</div>
@@ -245,6 +267,102 @@
         </div>
         <div id="cl-review-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 max-h-[960px] overflow-y-auto pr-1"></div>
       </div>
+    </div>
+  </div>
+
+  <div id="panel-mapping" class="hidden flex flex-col gap-5">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 class="text-xs font-medium text-gray-500 uppercase tracking-widest">分类映射工作台</h2>
+          <div class="text-sm text-gray-400 mt-1">把图片分类结果里的自由标签批量映射到自动组套使用的 7 大品类；不会改 PNG 文件名。</div>
+        </div>
+        <div class="text-xs text-gray-500 max-w-xl leading-6">
+          当前目录优先生效目录快照；若当前目录没有，则回退全局预设。应用映射后，会自动删除受影响图片的旧语义 sidecar 并重建语义索引。
+        </div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
+        <div class="flex flex-col gap-1.5">
+          <label class="text-sm text-gray-300">分类输出目录</label>
+          <input id="cm-output-dir" type="text" placeholder="例如：J:/classified_assets" />
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <button id="cm-load-btn" onclick="loadClassifyMappingWorkspace()" class="bg-gray-800 hover:bg-gray-700 disabled:bg-gray-900 disabled:text-gray-600 disabled:cursor-not-allowed text-gray-100 font-medium rounded-xl px-5 py-3 text-sm transition">加载映射工作台</button>
+          <button id="cm-reset-btn" onclick="resetClassifyMappingDraft()" class="bg-gray-800 hover:bg-gray-700 disabled:bg-gray-900 disabled:text-gray-600 disabled:cursor-not-allowed text-gray-100 font-medium rounded-xl px-5 py-3 text-sm transition">重置本次分配</button>
+          <button id="cm-apply-btn" onclick="applyClassifyMappingDraft()" class="bg-teal-600 hover:bg-teal-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-5 py-3 text-sm transition">应用映射</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+        <div id="cm-stat-total-images" class="text-2xl font-bold text-gray-100">0</div>
+        <div class="text-xs text-gray-500 mt-1">图片总数</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+        <div id="cm-stat-total-labels" class="text-2xl font-bold text-gray-100">0</div>
+        <div class="text-xs text-gray-500 mt-1">源标签数</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+        <div id="cm-stat-mapped-labels" class="text-2xl font-bold text-emerald-300">0</div>
+        <div class="text-xs text-gray-500 mt-1">已映射标签</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+        <div id="cm-stat-unmapped-labels" class="text-2xl font-bold text-amber-300">0</div>
+        <div class="text-xs text-gray-500 mt-1">待映射标签</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+        <div id="cm-stat-mapped-images" class="text-2xl font-bold text-emerald-300">0</div>
+        <div class="text-xs text-gray-500 mt-1">已纳入语义</div>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 text-center">
+        <div id="cm-stat-unmapped-images" class="text-2xl font-bold text-amber-300">0</div>
+        <div class="text-xs text-gray-500 mt-1">暂未纳入</div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_minmax(0,480px)] gap-5 items-start">
+      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 flex flex-col gap-4">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">待映射标签池</div>
+            <div class="text-xs text-gray-500 mt-1">只显示当前目录里还没落到 7 大品类的源标签</div>
+          </div>
+          <span class="text-xs px-2.5 py-1 rounded-full border border-amber-900 bg-amber-950/50 text-amber-300">橙色：待处理</span>
+        </div>
+        <div id="cm-unmapped-pool" class="flex flex-col gap-2 max-h-[780px] overflow-y-auto pr-1"></div>
+      </div>
+
+      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 flex flex-col gap-4 min-h-[620px]">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">样例预览</div>
+            <div id="cm-selected-summary" class="text-sm text-gray-400 mt-1">先从左侧或右侧选中一个源标签，再查看样例图并分配目标品类。</div>
+          </div>
+          <div id="cm-selected-state" class="text-xs text-gray-500"></div>
+        </div>
+        <div id="cm-selected-banner" class="hidden rounded-2xl border border-cyan-900/80 bg-cyan-950/20 px-4 py-3 text-sm text-cyan-100"></div>
+        <div id="cm-preview-grid" class="grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+      </div>
+
+      <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 flex flex-col gap-4">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <div>
+            <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">目标品类桶</div>
+            <div class="text-xs text-gray-500 mt-1">绿色：已保存，青色：本次新分配未应用，深绿色：源标签本身就是 7 大品类</div>
+          </div>
+          <div class="text-xs text-gray-500">选中一个源标签后，可点击任意桶头将它分配进去</div>
+        </div>
+        <div id="cm-buckets" class="grid grid-cols-1 2xl:grid-cols-2 gap-3"></div>
+      </div>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-5 flex flex-col gap-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="text-xs font-medium text-gray-500 uppercase tracking-widest">映射日志</div>
+        <div class="text-xs text-gray-500">用于记录加载、预览、应用映射和删除旧 sidecar 的结果</div>
+      </div>
+      <div id="cm-log" class="bg-gray-950 border border-gray-800 rounded-xl p-3 h-40 overflow-y-auto flex flex-col gap-0.5 font-mono text-xs"></div>
     </div>
   </div>
 
@@ -685,8 +803,8 @@
               </div>
               <div class="flex flex-col gap-1.5">
                 <label class="text-sm text-gray-300">候选类别</label>
-                <input id="cg-box-allowed-types" class="box-prop-input" type="text" placeholder="例如：dining_table, cabinet" />
-                <div class="text-xs text-gray-500">逗号分隔。系统会先匹配当前类型，再按这里的顺序兜底补位。</div>
+                <input id="cg-box-allowed-types" class="box-prop-input" type="text" placeholder="例如：armchair, accent_chair, couch" />
+                <div class="text-xs text-gray-500">逗号分隔。这里可以直接填写模型原始品类；系统会先匹配当前类型，再按这里的顺序兜底补位。</div>
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div class="flex flex-col gap-1.5">
@@ -753,11 +871,19 @@ const catalogEditorState = {
   previewScale: 1,
   nextBoxId: 1,
 };
+const CLASSIFY_BACKEND_CLIP = 'clip';
+const CLASSIFY_BACKEND_LOCAL_QWEN3_VL = 'local_qwen3_vl';
+const CLASSIFY_BACKEND_LABELS = {
+  [CLASSIFY_BACKEND_CLIP]: 'CLIP',
+  [CLASSIFY_BACKEND_LOCAL_QWEN3_VL]: '本地 Qwen3-VL-8B-Instruct',
+};
 
 let savedCategoryRows = [];
 const classifyReviewState = {
   outputDir: '',
   loadedCategory: '',
+  availableCategories: [],
+  isLoading: false,
   items: [],
   selectedImagePath: null,
   stats: {
@@ -765,6 +891,30 @@ const classifyReviewState = {
     loaded: 0,
     total: 0,
   },
+};
+const classifySessionState = {
+  backend: CLASSIFY_BACKEND_CLIP,
+  hintsByImagePath: {},
+};
+const classifyMappingState = {
+  outputDir: '',
+  sourceLabels: [],
+  initialMappings: {},
+  draftMappings: {},
+  summary: {
+    total_images: 0,
+    total_source_labels: 0,
+    mapped_source_labels: 0,
+    unmapped_source_labels: 0,
+    mapped_images: 0,
+    unmapped_images: 0,
+  },
+  selectedSourceLabel: '',
+  previewItems: [],
+  loaded: false,
+  isLoading: false,
+  isApplying: false,
+  previewLoading: false,
 };
 
 const semanticState = {
@@ -778,12 +928,13 @@ const semanticState = {
 
 function switchTab(tab) {
   const appMain = document.getElementById('app-main');
-  ['clean', 'rmbg', 'classify', 'semantic', 'bundle', 'catalog'].forEach(name => {
+  ['clean', 'rmbg', 'classify', 'mapping', 'semantic', 'bundle', 'catalog'].forEach(name => {
     document.getElementById(`panel-${name}`).classList.toggle('hidden', name !== tab);
     document.getElementById(`tab-${name}-btn`).classList.toggle('active', name === tab);
   });
   if (appMain) appMain.style.maxWidth = tab === 'bundle' ? '128rem' : '';
   if (tab === 'catalog') requestAnimationFrame(renderCatalogEditor);
+  if (tab === 'mapping') requestAnimationFrame(prepareClassifyMappingTab);
   if (tab === 'semantic') requestAnimationFrame(renderSemanticReviewPanel);
   if (tab === 'bundle') requestAnimationFrame(renderBundlePanel);
 }
@@ -816,12 +967,34 @@ function updateThresholdLabel(val) {
   document.getElementById('threshold-label').textContent = value === 0 ? '0%（不过滤）' : `${value}%`;
 }
 
+function getClassifyBackendLabel(backend) {
+  return CLASSIFY_BACKEND_LABELS[String(backend || '').trim()] || String(backend || '').trim() || '未知后端';
+}
+
+function getClassifyBackendValue() {
+  return document.getElementById('cl-backend')?.value || CLASSIFY_BACKEND_CLIP;
+}
+
+function updateClassifyBackendUI() {
+  const backend = getClassifyBackendValue();
+  const clipSettings = document.getElementById('cl-clip-settings');
+  const backendNote = document.getElementById('cl-backend-note');
+  const isClip = backend === CLASSIFY_BACKEND_CLIP;
+
+  if (clipSettings) clipSettings.classList.toggle('hidden', !isClip);
+  if (backendNote) {
+    backendNote.textContent = isClip
+      ? 'CLIP 模式会在当前分类配置里做闭集匹配，并支持阈值、uncertain 和多轮降阈值复跑。'
+      : '本地 Qwen 模式会直接输出模型原始识别的家具类型，并按规范化后的原始后缀落盘；当前分类配置不参与本次推理。';
+  }
+}
+
 function buildCategoryRow(name, prompt) {
   const row = document.createElement('div');
   row.className = 'cat-row grid grid-cols-[160px_1fr_32px] gap-2 items-center';
   row.innerHTML = `
     <input type="text" value="${escHtml(name)}" class="cat-name" placeholder="文件夹名" />
-    <input type="text" value="${escHtml(prompt)}" class="cat-prompt" placeholder="CLIP 文本描述（英文）" />
+    <input type="text" value="${escHtml(prompt)}" class="cat-prompt" placeholder="分类描述（可中英混合）" />
     <button onclick="this.closest('.cat-row').remove()"
       class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-600 hover:text-red-400 hover:bg-gray-800 transition text-lg leading-none">×</button>
   `;
@@ -835,7 +1008,7 @@ function addCategoryRow(name = '', prompt = '') {
 function getCategoriesFromUI() {
   const items = [];
   document.querySelectorAll('.cat-row').forEach(row => {
-    const name = row.querySelector('.cat-name').value.trim();
+    const name = normalizeCatalogBoxType(row.querySelector('.cat-name').value.trim());
     const prompt = row.querySelector('.cat-prompt').value.trim();
     if (name && prompt) items.push({ name, prompt });
   });
@@ -909,14 +1082,13 @@ function saveCategories() {
 }
 
 function normalizeCatalogBoxType(type) {
-  const normalized = String(type || '').trim().toLowerCase();
-  if (!normalized) return '';
-  for (const [canonical, aliases] of Object.entries(CATALOG_TYPE_ALIASES)) {
-    if (canonical === normalized || aliases.includes(normalized)) {
-      return canonical;
-    }
-  }
-  return normalized;
+  return String(type || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function normalizeCatalogAllowedTypes(values, boxType = '') {
@@ -1262,8 +1434,10 @@ function saveCatalogLayout() {
 setSavedCategories(DEFAULT_CATEGORIES);
 getSavedCategoryRows().forEach(item => addCategoryRow(item.name, item.prompt));
 updateThresholdLabel(document.getElementById('cl-threshold').value);
+updateClassifyBackendUI();
 setCatalogLayout(DEFAULT_CATALOG_LAYOUT);
 initializeClassifyReviewUI();
+prepareClassifyMappingTab();
 initializeSemanticUI();
 document.getElementById('cg-canvas-width').addEventListener('input', syncCatalogCanvasFromInputs);
 document.getElementById('cg-canvas-height').addEventListener('input', syncCatalogCanvasFromInputs);
@@ -3232,6 +3406,7 @@ let clEventSource = null;
 function startClassify() {
   const inputDir = document.getElementById('cl-input-dir').value.trim();
   const outputDir = document.getElementById('cl-output-dir').value.trim();
+  const backend = getClassifyBackendValue();
   const threshold = parseInt(document.getElementById('cl-threshold').value, 10) / 100;
   const autoRetryUncertain = document.getElementById('cl-auto-retry-uncertain').checked;
   const thresholdStep = parseFloat(document.getElementById('cl-threshold-step').value) / 100;
@@ -3240,14 +3415,16 @@ function startClassify() {
     alert('请填写输入和输出文件夹路径');
     return;
   }
-  if (categories.length === 0) {
+  if (backend === CLASSIFY_BACKEND_CLIP && categories.length === 0) {
     alert('请至少添加一个分类');
     return;
   }
-  if (!Number.isFinite(thresholdStep) || thresholdStep <= 0 || thresholdStep > 1) {
+  if (backend === CLASSIFY_BACKEND_CLIP && (!Number.isFinite(thresholdStep) || thresholdStep <= 0 || thresholdStep > 1)) {
     alert('每轮降幅必须大于 0 且不超过 100');
     return;
   }
+  classifySessionState.backend = backend;
+  classifySessionState.hintsByImagePath = {};
   setClProcessing(true);
   document.getElementById('cl-progress-card').classList.remove('hidden');
   document.getElementById('cl-log').innerHTML = '';
@@ -3259,9 +3436,10 @@ function startClassify() {
     body: JSON.stringify({
       input_dir: inputDir,
       output_dir: outputDir,
-      threshold,
-      auto_retry_uncertain: autoRetryUncertain,
-      threshold_step: thresholdStep,
+      backend,
+      threshold: backend === CLASSIFY_BACKEND_CLIP ? threshold : undefined,
+      auto_retry_uncertain: backend === CLASSIFY_BACKEND_CLIP ? autoRetryUncertain : undefined,
+      threshold_step: backend === CLASSIFY_BACKEND_CLIP ? thresholdStep : undefined,
       categories,
     }),
   })
@@ -3282,12 +3460,18 @@ function listenClassify() {
   clEventSource.onmessage = function (e) {
     const msg = JSON.parse(e.data);
     if (msg.type === 'ping') return;
+    const backend = String(msg.backend || classifySessionState.backend || CLASSIFY_BACKEND_CLIP).trim();
     if (msg.type === 'start') {
       clLog(`发现 ${msg.total} 张图片，开始分类...`, 'text-gray-500');
-      clLog(
-        `自动继续处理 uncertain：${msg.auto_retry_uncertain ? '开启' : '关闭'} · 每轮降幅：${(Number(msg.threshold_step || 0) * 100).toFixed(0)}%`,
-        'text-gray-500',
-      );
+      clLog(`当前后端：${getClassifyBackendLabel(backend)}`, 'text-gray-500');
+      if (backend === CLASSIFY_BACKEND_CLIP) {
+        clLog(
+          `自动继续处理 uncertain：${msg.auto_retry_uncertain ? '开启' : '关闭'} · 每轮降幅：${(Number(msg.threshold_step || 0) * 100).toFixed(0)}%`,
+          'text-gray-500',
+        );
+      } else {
+        clLog('策略：直接采用模型原始识别结果，并按规范化后的原始后缀落盘。', 'text-gray-500');
+      }
       setClProgress(0, msg.total);
     }
     if (msg.type === 'pass_start') {
@@ -3302,11 +3486,29 @@ function listenClassify() {
     if (msg.type === 'progress') {
       setClProgress(msg.current, msg.total);
       updateCatStats(msg.stats);
-      const conf = (msg.confidence * 100).toFixed(0);
       const color = msg.category === 'uncertain' ? 'text-yellow-500' : 'text-violet-400';
-      clLog(`第 ${msg.pass_index} 轮 · ${msg.file}  →  ${msg.category}  (${conf}%)`, color);
+      if (backend === CLASSIFY_BACKEND_CLIP) {
+        const conf = (msg.confidence * 100).toFixed(0);
+        clLog(`第 ${msg.pass_index} 轮 · ${msg.file}  →  ${msg.category}  (${conf}%)`, color);
+      } else {
+        if (msg.output_path) {
+          classifySessionState.hintsByImagePath[String(msg.output_path)] = {
+            raw_category: String(msg.raw_category || ''),
+            output_category: String(msg.category || ''),
+            reason: String(msg.reason || ''),
+          };
+        }
+        const extras = [];
+        if (msg.raw_category) extras.push(`原始识别：${msg.raw_category}`);
+        if (msg.reason) extras.push(`说明：${msg.reason}`);
+        const suffix = extras.length ? ` · ${extras.join(' · ')}` : '';
+        clLog(`${msg.file}  →  ${msg.category}${suffix}`, color);
+      }
     }
-    if (msg.type === 'error_item') clLog(`第 ${msg.pass_index} 轮 · ✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+    if (msg.type === 'error_item') {
+      if (backend === CLASSIFY_BACKEND_CLIP) clLog(`第 ${msg.pass_index} 轮 · ✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+      else clLog(`✗ ${msg.file} — ${msg.message}`, 'text-red-500');
+    }
     if (msg.type === 'pass_done') {
       updateCatStats(msg.stats);
       clLog(
@@ -3318,7 +3520,8 @@ function listenClassify() {
       clLog('────────────────────────────────────────', 'text-gray-700');
       const entries = Object.entries(msg.stats).map(([k, v]) => `${k}: ${v}`).join('  ');
       updateCatStats(msg.stats);
-      clLog(`完成 · 共 ${msg.passes || 1} 轮 · ${entries}`, 'text-white');
+      if (backend === CLASSIFY_BACKEND_CLIP) clLog(`完成 · 共 ${msg.passes || 1} 轮 · ${entries}`, 'text-white');
+      else clLog(`完成 · ${entries}`, 'text-white');
       setStatus('完成', 'bg-green-900 text-green-400');
       setClProcessing(false);
       clEventSource.close();
@@ -3363,6 +3566,7 @@ function setClProgress(current, total) {
 
 function setClProcessing(active) {
   const btn = document.getElementById('cl-start-btn');
+  const backendSelect = document.getElementById('cl-backend');
   const thresholdInput = document.getElementById('cl-threshold');
   const autoRetryCheckbox = document.getElementById('cl-auto-retry-uncertain');
   const thresholdStepInput = document.getElementById('cl-threshold-step');
@@ -3371,6 +3575,7 @@ function setClProcessing(active) {
   const reassignBtn = document.getElementById('cl-reassign-btn');
   const reassignSelect = document.getElementById('cl-reassign-category');
   btn.disabled = active;
+  if (backendSelect) backendSelect.disabled = active;
   thresholdInput.disabled = active;
   autoRetryCheckbox.disabled = active;
   thresholdStepInput.disabled = active;
@@ -3378,6 +3583,7 @@ function setClProcessing(active) {
   if (reviewCategorySelect) reviewCategorySelect.disabled = active;
   if (reassignBtn) reassignBtn.disabled = active;
   if (reassignSelect) reassignSelect.disabled = active;
+  renderClassifyReviewCategoryTags();
   btn.querySelector('span').textContent = active ? '分类中...' : '开始分类';
   if (active) setStatus('分类中', 'bg-violet-900 text-violet-300');
   else if (document.getElementById('status-badge').textContent === '分类中') setStatus('空闲', 'bg-gray-800 text-gray-400');
@@ -3391,12 +3597,17 @@ function getClassifyDisplayCategory(category) {
 }
 
 function normalizeClassifyReviewItem(item = {}) {
+  const imagePath = String(item.image_path || '').trim();
+  const sessionHint = classifySessionState.hintsByImagePath[imagePath] || {};
   return {
     file_name: String(item.file_name || ''),
-    image_path: String(item.image_path || ''),
+    image_path: imagePath,
     relative_path: String(item.relative_path || ''),
     current_category: String(item.current_category || ''),
     has_semantic_sidecar: Boolean(item.has_semantic_sidecar),
+    raw_category: String(item.raw_category || sessionHint.raw_category || ''),
+    output_category: String(item.output_category || sessionHint.output_category || item.current_category || ''),
+    reason: String(item.reason || sessionHint.reason || ''),
   };
 }
 
@@ -3410,6 +3621,8 @@ function getClassifyPreviewUrl(item) {
 
 function resetClassifyReviewState() {
   classifyReviewState.loadedCategory = '';
+  classifyReviewState.availableCategories = [];
+  classifyReviewState.isLoading = false;
   classifyReviewState.items = [];
   classifyReviewState.selectedImagePath = null;
   classifyReviewState.stats = {
@@ -3417,13 +3630,34 @@ function resetClassifyReviewState() {
     loaded: 0,
     total: 0,
   };
+  renderClassifyReviewCategoryTags();
+}
+
+function isClassifyReviewTagLocked() {
+  return Boolean(classifyReviewState.isLoading || document.getElementById('cl-start-btn')?.disabled);
+}
+
+function getClassifyReviewCategories() {
+  const preferred = [
+    ...(Array.isArray(classifyReviewState.availableCategories) ? classifyReviewState.availableCategories : []),
+    ...getSavedCategoryNames(true),
+  ];
+  const result = [];
+  const seen = new Set();
+  preferred.forEach(value => {
+    const normalized = normalizeCatalogBoxType(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    result.push(normalized);
+  });
+  return result;
 }
 
 function populateClassifyReviewCategoryControls(options = {}) {
   const preserveSelection = Boolean(options.preserveSelection);
   const loadSelect = document.getElementById('cl-review-category');
   const reassignSelect = document.getElementById('cl-reassign-category');
-  const categories = getSavedCategoryNames(true);
+  const categories = getClassifyReviewCategories();
   const previousLoadValue = preserveSelection ? (classifyReviewState.loadedCategory || loadSelect?.value || '') : (loadSelect?.value || '');
   const previousTargetValue = preserveSelection ? (reassignSelect?.value || '') : '';
 
@@ -3450,7 +3684,9 @@ function populateClassifyReviewCategoryControls(options = {}) {
   }
 
   if (classifyReviewState.loadedCategory && !categories.includes(classifyReviewState.loadedCategory)) {
-    resetClassifyReviewState();
+    classifyReviewState.loadedCategory = categories[0] || '';
+    classifyReviewState.items = [];
+    classifyReviewState.selectedImagePath = null;
   }
   renderClassifyReviewPanel();
 }
@@ -3490,6 +3726,89 @@ function syncClassifyReviewSummary() {
     : '尚未加载任何分类结果';
 }
 
+function getClassifyReviewTagEntries() {
+  const counts = classifyReviewState.stats && classifyReviewState.stats.counts ? classifyReviewState.stats.counts : {};
+  const preferredOrder = [
+    ...getClassifyReviewCategories(),
+    ...Object.keys(counts).map(category => normalizeCatalogBoxType(category)).filter(Boolean),
+  ];
+  const orderMap = new Map();
+  preferredOrder.forEach((category, index) => {
+    if (!orderMap.has(category)) orderMap.set(category, index);
+  });
+
+  return Object.entries(counts)
+    .map(([category, count]) => ({
+      category: normalizeCatalogBoxType(category),
+      count: Number(count || 0),
+    }))
+    .filter(entry => entry.category && entry.count > 0)
+    .sort((a, b) => {
+      if (a.count !== b.count) return b.count - a.count;
+      const orderDelta = (orderMap.get(a.category) ?? Number.MAX_SAFE_INTEGER) - (orderMap.get(b.category) ?? Number.MAX_SAFE_INTEGER);
+      if (orderDelta !== 0) return orderDelta;
+      return a.category.localeCompare(b.category);
+    });
+}
+
+function renderClassifyReviewCategoryTags() {
+  const card = document.getElementById('cl-review-tags-card');
+  const container = document.getElementById('cl-review-tags');
+  if (!card || !container) return;
+
+  const currentCategory = String(classifyReviewState.loadedCategory || '').trim();
+  const entries = classifyReviewState.outputDir ? getClassifyReviewTagEntries() : [];
+  const controlsLocked = isClassifyReviewTagLocked();
+
+  container.innerHTML = '';
+  if (!entries.length) {
+    card.classList.add('hidden');
+    return;
+  }
+
+  card.classList.remove('hidden');
+  entries.forEach(entry => {
+    const isActive = entry.category === currentCategory;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.disabled = controlsLocked;
+
+    const palette = entry.category === 'uncertain'
+      ? {
+          base: 'border-yellow-900 bg-yellow-950/60 text-yellow-300',
+          active: 'border-yellow-500 bg-yellow-900/70 text-yellow-100 shadow-[0_0_0_1px_rgba(234,179,8,0.35)]',
+          hover: 'hover:border-yellow-700 hover:bg-yellow-950',
+        }
+      : entry.category === 'error'
+        ? {
+            base: 'border-red-900 bg-red-950/60 text-red-300',
+            active: 'border-red-500 bg-red-900/70 text-red-100 shadow-[0_0_0_1px_rgba(239,68,68,0.35)]',
+            hover: 'hover:border-red-700 hover:bg-red-950',
+          }
+        : {
+            base: 'border-violet-900 bg-violet-950/50 text-violet-300',
+            active: 'border-violet-500 bg-violet-900/70 text-violet-100 shadow-[0_0_0_1px_rgba(139,92,246,0.35)]',
+            hover: 'hover:border-violet-700 hover:bg-violet-950',
+          };
+
+    button.className = [
+      'log-item rounded-full border px-3 py-1.5 text-xs font-mono transition',
+      isActive ? palette.active : `${palette.base} ${controlsLocked ? 'opacity-60 cursor-not-allowed' : palette.hover}`,
+    ].join(' ');
+    button.textContent = `${getClassifyDisplayCategory(entry.category)}: ${entry.count}`;
+    if (!controlsLocked && !isActive) {
+      button.addEventListener('click', () => {
+        const loadLocked = isClassifyReviewTagLocked();
+        const categorySelect = document.getElementById('cl-review-category');
+        if (loadLocked || !categorySelect || currentCategory === entry.category) return;
+        categorySelect.value = entry.category;
+        loadClassifyResults();
+      });
+    }
+    container.appendChild(button);
+  });
+}
+
 function renderClassifyReviewList() {
   const list = document.getElementById('cl-review-list');
   if (!list) return;
@@ -3523,6 +3842,14 @@ function renderClassifyReviewList() {
       </button>
       ${selected ? `
         <div class="border-t border-gray-800 bg-gray-950/60 p-4 flex flex-col gap-3">
+          ${item.raw_category || item.reason ? `
+            <div class="rounded-xl border border-sky-900/80 bg-sky-950/20 px-3 py-2.5 flex flex-col gap-1.5">
+              <div class="text-xs font-medium text-sky-300 uppercase tracking-widest">本次本地 Qwen 识别</div>
+              <div class="text-xs text-gray-300 break-all">原始识别：${escHtml(item.raw_category || '-')}</div>
+              <div class="text-xs text-gray-500 break-all">落盘后缀：${escHtml(item.output_category || item.current_category || '-')}</div>
+              ${item.reason ? `<div class="text-xs text-gray-500 break-all">说明：${escHtml(item.reason)}</div>` : ''}
+            </div>
+          ` : ''}
           <div class="text-sm text-gray-200">分类修正</div>
           <div class="text-xs text-gray-500 leading-6">只会替换文件名最后一个分类后缀，并在存在时删除旧语义 sidecar。</div>
           <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
@@ -3577,7 +3904,7 @@ function renderClassifyReassignControls(item) {
   if (!select || !button) return;
 
   const controlsLocked = Boolean(document.getElementById('cl-start-btn')?.disabled);
-  const categories = getSavedCategoryNames(true);
+  const categories = getClassifyReviewCategories();
   select.innerHTML = '';
   categories.forEach(category => {
     const option = document.createElement('option');
@@ -3610,12 +3937,14 @@ function renderClassifyReviewEditor() {}
 
 function renderClassifyReviewPanel() {
   syncClassifyReviewSummary();
+  renderClassifyReviewCategoryTags();
   renderClassifyReviewList();
 }
 
 function loadClassifyResults(options = {}) {
   const outputDir = document.getElementById('cl-output-dir').value.trim();
-  const category = document.getElementById('cl-review-category').value;
+  const selectedCategory = document.getElementById('cl-review-category').value;
+  const category = classifyReviewState.outputDir === outputDir ? selectedCategory : '';
   const preserveSelection = Boolean(options.preserveSelection);
   const previousSelection = preserveSelection && classifyReviewState.loadedCategory === category
     ? classifyReviewState.selectedImagePath
@@ -3626,12 +3955,10 @@ function loadClassifyResults(options = {}) {
     alert('请填写输出目录');
     return;
   }
-  if (!category) {
-    alert('请选择要加载的当前分类');
-    return;
-  }
 
+  classifyReviewState.isLoading = true;
   loadBtn.disabled = true;
+  renderClassifyReviewCategoryTags();
   loadBtn.querySelector('span').textContent = '正在加载...';
 
   fetch('/classify/load', {
@@ -3647,6 +3974,9 @@ function loadClassifyResults(options = {}) {
       if (d.error) throw new Error(d.error);
       classifyReviewState.outputDir = d.output_dir;
       classifyReviewState.loadedCategory = d.category;
+      classifyReviewState.availableCategories = Array.isArray(d.available_categories)
+        ? d.available_categories.map(item => normalizeCatalogBoxType(item)).filter(Boolean)
+        : [];
       classifyReviewState.items = Array.isArray(d.items) ? d.items.map(normalizeClassifyReviewItem) : [];
       classifyReviewState.stats = d.stats && typeof d.stats === 'object'
         ? {
@@ -3658,6 +3988,7 @@ function loadClassifyResults(options = {}) {
       classifyReviewState.selectedImagePath = previousSelection && classifyReviewState.items.some(item => item.image_path === previousSelection)
         ? previousSelection
         : (classifyReviewState.items[0]?.image_path || null);
+      populateClassifyReviewCategoryControls({ preserveSelection: true });
       document.getElementById('cl-review-category').value = d.category;
       renderClassifyReviewPanel();
       clLog(`已加载 ${classifyReviewState.items.length} 张 ${getClassifyDisplayCategory(d.category)} 图片用于分类复核`, 'text-gray-400');
@@ -3666,7 +3997,9 @@ function loadClassifyResults(options = {}) {
       alert(err.message || '加载失败');
     })
     .finally(() => {
+      classifyReviewState.isLoading = false;
       loadBtn.disabled = false;
+      renderClassifyReviewCategoryTags();
       loadBtn.querySelector('span').textContent = '加载分类结果';
     });
 }
@@ -3734,6 +4067,10 @@ function reassignCurrentClassifyItem() {
         loaded: classifyReviewState.items.length,
         total: Number(classifyReviewState.stats.total || 0),
       };
+      classifyReviewState.availableCategories = Array.isArray(d.available_categories)
+        ? d.available_categories.map(item => normalizeCatalogBoxType(item)).filter(Boolean)
+        : classifyReviewState.availableCategories;
+      populateClassifyReviewCategoryControls({ preserveSelection: true });
       renderClassifyReviewPanel();
 
       const previousLabel = getClassifyDisplayCategory(d.previous_category);
@@ -3752,6 +4089,522 @@ function reassignCurrentClassifyItem() {
       button.disabled = false;
       select.disabled = false;
       button.textContent = previousButtonText;
+    });
+}
+
+function cmLog(text, cls = 'text-gray-400') {
+  addLog('cm-log', text, cls);
+}
+
+function getClassifyMappingTargetCategories() {
+  return Array.isArray(DEFAULT_BUNDLE_CONFIG.bundle_categories) ? DEFAULT_BUNDLE_CONFIG.bundle_categories : [];
+}
+
+function normalizeClassifyMappingItem(item = {}) {
+  const sourceLabel = normalizeCatalogBoxType(item.source_label || item.sourceLabel || '');
+  const targetCategory = item.target_category ? normalizeCatalogBoxType(item.target_category) : '';
+  const mappingSource = String(item.mapping_source || item.mappingSource || 'unmapped').trim().toLowerCase() || 'unmapped';
+  return {
+    source_label: sourceLabel,
+    count: Math.max(0, Number(item.count || 0)),
+    target_category: targetCategory,
+    mapping_source: mappingSource,
+    is_identity: Boolean(item.is_identity || mappingSource === 'identity'),
+  };
+}
+
+function getClassifyMappingSelectedItem() {
+  return classifyMappingState.sourceLabels.find(item => item.source_label === classifyMappingState.selectedSourceLabel) || null;
+}
+
+function getClassifyMappingDraftTarget(item) {
+  if (!item) return '';
+  if (item.is_identity) return item.source_label;
+  return normalizeCatalogBoxType(classifyMappingState.draftMappings[item.source_label] || '');
+}
+
+function hasClassifyMappingPendingChanges() {
+  const sourceLabels = new Set([
+    ...Object.keys(classifyMappingState.initialMappings || {}),
+    ...Object.keys(classifyMappingState.draftMappings || {}),
+  ]);
+  for (const sourceLabel of sourceLabels) {
+    const initialTarget = normalizeCatalogBoxType(classifyMappingState.initialMappings[sourceLabel] || '');
+    const currentTarget = normalizeCatalogBoxType(classifyMappingState.draftMappings[sourceLabel] || '');
+    if (initialTarget !== currentTarget) return true;
+  }
+  return false;
+}
+
+function isClassifyMappingPending(item) {
+  if (!item || item.is_identity) return false;
+  const initialTarget = normalizeCatalogBoxType(classifyMappingState.initialMappings[item.source_label] || '');
+  const currentTarget = normalizeCatalogBoxType(classifyMappingState.draftMappings[item.source_label] || '');
+  return Boolean(currentTarget) && currentTarget !== initialTarget;
+}
+
+function getClassifyMappingVisualMeta(item) {
+  const selected = item && classifyMappingState.selectedSourceLabel === item.source_label;
+  const pending = isClassifyMappingPending(item);
+  const draftTarget = getClassifyMappingDraftTarget(item);
+  let tone = {
+    border: 'border-amber-900',
+    bg: 'bg-amber-950/35',
+    text: 'text-amber-100',
+    sub: 'text-amber-300',
+    badge: '新带入',
+    badgeClasses: 'border-amber-900 bg-amber-950/50 text-amber-300',
+  };
+
+  if (item?.is_identity) {
+    tone = {
+      border: 'border-emerald-700',
+      bg: 'bg-emerald-950/35',
+      text: 'text-emerald-50',
+      sub: 'text-emerald-300',
+      badge: '直通',
+      badgeClasses: 'border-emerald-700 bg-emerald-950/60 text-emerald-200',
+    };
+  } else if (pending) {
+    tone = {
+      border: 'border-cyan-700',
+      bg: 'bg-cyan-950/35',
+      text: 'text-cyan-50',
+      sub: 'text-cyan-300',
+      badge: '待应用',
+      badgeClasses: 'border-cyan-700 bg-cyan-950/60 text-cyan-200',
+    };
+  } else if (draftTarget) {
+    tone = {
+      border: 'border-emerald-900',
+      bg: 'bg-emerald-950/25',
+      text: 'text-emerald-50',
+      sub: 'text-emerald-300',
+      badge: item.mapping_source === 'directory' ? '目录快照' : '已保存',
+      badgeClasses: 'border-emerald-900 bg-emerald-950/50 text-emerald-300',
+    };
+  }
+
+  return {
+    ...tone,
+    selectedClasses: selected ? 'ring-2 ring-violet-500/60 border-violet-500 shadow-[0_0_0_1px_rgba(139,92,246,0.25)]' : '',
+  };
+}
+
+function getClassifyMappingUnmappedItems() {
+  return classifyMappingState.sourceLabels.filter(item => !item.is_identity && !getClassifyMappingDraftTarget(item));
+}
+
+function getClassifyMappingBucketItems(targetCategory) {
+  const normalizedTarget = normalizeCatalogBoxType(targetCategory);
+  return classifyMappingState.sourceLabels.filter(item => getClassifyMappingDraftTarget(item) === normalizedTarget);
+}
+
+function syncClassifyMappingSummary() {
+  const summary = classifyMappingState.summary || {};
+  document.getElementById('cm-stat-total-images').textContent = Number(summary.total_images || 0);
+  document.getElementById('cm-stat-total-labels').textContent = Number(summary.total_source_labels || 0);
+  document.getElementById('cm-stat-mapped-labels').textContent = Number(summary.mapped_source_labels || 0);
+  document.getElementById('cm-stat-unmapped-labels').textContent = Number(summary.unmapped_source_labels || 0);
+  document.getElementById('cm-stat-mapped-images').textContent = Number(summary.mapped_images || 0);
+  document.getElementById('cm-stat-unmapped-images').textContent = Number(summary.unmapped_images || 0);
+}
+
+function renderClassifyMappingPool() {
+  const container = document.getElementById('cm-unmapped-pool');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (!classifyMappingState.loaded) {
+    container.innerHTML = '<div class="rounded-2xl border border-dashed border-gray-800 bg-gray-950/40 px-4 py-8 text-sm text-gray-500">先加载一个分类输出目录，再开始整理源标签映射。</div>';
+    return;
+  }
+
+  const items = getClassifyMappingUnmappedItems();
+  if (!items.length) {
+    container.innerHTML = '<div class="rounded-2xl border border-dashed border-gray-800 bg-gray-950/40 px-4 py-8 text-sm text-gray-500">当前目录里需要处理的自由标签已经全部分配到右侧品类桶了。</div>';
+    return;
+  }
+
+  items.forEach(item => {
+    const meta = getClassifyMappingVisualMeta(item);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `w-full rounded-2xl border px-4 py-3 text-left transition ${meta.border} ${meta.bg} ${meta.selectedClasses || 'hover:border-amber-700'}`;
+    button.innerHTML = `
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <div class="font-mono text-sm ${meta.text} break-all">${escHtml(item.source_label)}</div>
+          <div class="text-xs ${meta.sub} mt-1">${item.count} 张图片</div>
+        </div>
+        <span class="shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${meta.badgeClasses}">${escHtml(meta.badge)}</span>
+      </div>
+    `;
+    button.addEventListener('click', () => selectClassifyMappingSourceLabel(item.source_label));
+    container.appendChild(button);
+  });
+}
+
+function renderClassifyMappingPreview() {
+  const summary = document.getElementById('cm-selected-summary');
+  const state = document.getElementById('cm-selected-state');
+  const banner = document.getElementById('cm-selected-banner');
+  const grid = document.getElementById('cm-preview-grid');
+  if (!summary || !state || !banner || !grid) return;
+
+  const item = getClassifyMappingSelectedItem();
+  grid.innerHTML = '';
+
+  if (!item) {
+    summary.textContent = classifyMappingState.loaded
+      ? '先从左侧或右侧选中一个源标签，再查看样例图并分配目标品类。'
+      : '加载目录后，这里会展示当前选中源标签的样例图片。';
+    state.textContent = '';
+    banner.classList.add('hidden');
+    grid.innerHTML = '<div class="col-span-full rounded-2xl border border-dashed border-gray-800 bg-gray-950/40 px-4 py-10 text-sm text-gray-500">尚未选中任何源标签。</div>';
+    return;
+  }
+
+  const effectiveTarget = getClassifyMappingDraftTarget(item);
+  summary.textContent = `${item.source_label} · ${item.count} 张图片`;
+  state.textContent = item.is_identity
+    ? '当前状态：该标签本身就是 7 大品类，可直接参与语义标签'
+    : effectiveTarget
+      ? `当前将进入：${getBundleCategoryLabel(effectiveTarget)}`
+      : '当前状态：尚未映射，不会进入语义标签与自动组套';
+
+  if (item.is_identity) {
+    banner.textContent = `${item.source_label} 已经是目标品类，无需额外映射。`;
+    banner.className = 'rounded-2xl border border-emerald-700 bg-emerald-950/20 px-4 py-3 text-sm text-emerald-100';
+    banner.classList.remove('hidden');
+  } else if (effectiveTarget) {
+    banner.textContent = isClassifyMappingPending(item)
+      ? `当前正在把 ${item.source_label} 映射到 ${getBundleCategoryLabel(effectiveTarget)}，记得点击“应用映射”后正式生效。`
+      : `${item.source_label} 当前已映射到 ${getBundleCategoryLabel(effectiveTarget)}。你也可以在右侧改分到别的品类桶。`;
+    banner.className = `${isClassifyMappingPending(item) ? 'border-cyan-700 bg-cyan-950/20 text-cyan-100' : 'border-emerald-900 bg-emerald-950/20 text-emerald-100'} rounded-2xl border px-4 py-3 text-sm`;
+    banner.classList.remove('hidden');
+  } else {
+    banner.textContent = `${item.source_label} 还没有映射结果。请在右侧选择一个目标品类桶把它放进去。`;
+    banner.className = 'rounded-2xl border border-amber-900 bg-amber-950/20 px-4 py-3 text-sm text-amber-100';
+    banner.classList.remove('hidden');
+  }
+
+  if (classifyMappingState.previewLoading) {
+    grid.innerHTML = '<div class="col-span-full rounded-2xl border border-gray-800 bg-gray-950/40 px-4 py-10 text-sm text-gray-500">正在加载样例图片...</div>';
+    return;
+  }
+
+  if (!classifyMappingState.previewItems.length) {
+    grid.innerHTML = '<div class="col-span-full rounded-2xl border border-dashed border-gray-800 bg-gray-950/40 px-4 py-10 text-sm text-gray-500">当前源标签下还没有可展示的样例图片。</div>';
+    return;
+  }
+
+  classifyMappingState.previewItems.forEach(entry => {
+    const card = document.createElement('div');
+    card.className = 'rounded-2xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2';
+    card.innerHTML = `
+      <div class="aspect-[4/3] rounded-xl bg-white border border-gray-800 overflow-hidden flex items-center justify-center">
+        <img src="${escHtml(getClassifyPreviewUrl(entry))}" alt="${escHtml(entry.file_name)}" class="w-full h-full object-contain" />
+      </div>
+      <div class="font-mono text-xs text-gray-200 break-all">${escHtml(entry.file_name)}</div>
+      <div class="text-[11px] text-gray-500 break-all">${escHtml(entry.relative_path || entry.image_path || '')}</div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function renderClassifyMappingBuckets() {
+  const container = document.getElementById('cm-buckets');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const selectedItem = getClassifyMappingSelectedItem();
+  const controlsLocked = Boolean(classifyMappingState.isLoading || classifyMappingState.isApplying);
+
+  getClassifyMappingTargetCategories().forEach(category => {
+    const items = getClassifyMappingBucketItems(category);
+    const imageCount = items.reduce((sum, item) => sum + Number(item.count || 0), 0);
+    const canAssign = Boolean(selectedItem && !selectedItem.is_identity && getClassifyMappingDraftTarget(selectedItem) !== category && !controlsLocked);
+
+    const card = document.createElement('div');
+    card.className = 'rounded-2xl border border-gray-800 bg-gray-950/40 p-4 flex flex-col gap-3';
+    card.innerHTML = `
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-medium text-gray-100">${escHtml(getBundleCategoryLabel(category))}</div>
+          <div class="text-xs text-gray-500 mt-1">${items.length} 个源标签 · ${imageCount} 张图片</div>
+        </div>
+        <button type="button" class="cm-assign-btn text-xs px-3 py-1.5 rounded-full border ${canAssign ? 'border-cyan-700 bg-cyan-950/40 text-cyan-200 hover:bg-cyan-950/70' : 'border-gray-800 bg-gray-900 text-gray-600 cursor-not-allowed'} transition" ${canAssign ? '' : 'disabled'}>
+          分配到此
+        </button>
+      </div>
+      <div class="cm-chip-wrap flex flex-wrap gap-2">
+        ${items.length ? '' : '<div class="text-xs text-gray-600">当前桶里还没有源标签</div>'}
+      </div>
+    `;
+
+    const assignButton = card.querySelector('.cm-assign-btn');
+    if (assignButton && canAssign) {
+      assignButton.addEventListener('click', () => assignSelectedClassifyMapping(category));
+    }
+
+    const chips = card.querySelector('.cm-chip-wrap');
+    items.forEach(item => {
+      const meta = getClassifyMappingVisualMeta(item);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `rounded-full border px-3 py-1.5 text-xs font-mono transition ${meta.border} ${meta.bg} ${meta.sub} ${meta.selectedClasses || 'hover:border-gray-700'}`;
+      chip.innerHTML = `${escHtml(item.source_label)} <span class="text-[11px] opacity-80">(${item.count})</span>`;
+      chip.addEventListener('click', () => selectClassifyMappingSourceLabel(item.source_label));
+      chips.appendChild(chip);
+    });
+
+    container.appendChild(card);
+  });
+}
+
+function renderClassifyMappingPanel() {
+  syncClassifyMappingSummary();
+  renderClassifyMappingPool();
+  renderClassifyMappingPreview();
+  renderClassifyMappingBuckets();
+
+  const loadBtn = document.getElementById('cm-load-btn');
+  const resetBtn = document.getElementById('cm-reset-btn');
+  const applyBtn = document.getElementById('cm-apply-btn');
+  const controlsLocked = Boolean(classifyMappingState.isLoading || classifyMappingState.isApplying);
+  const hasChanges = hasClassifyMappingPendingChanges();
+
+  if (loadBtn) {
+    loadBtn.disabled = controlsLocked;
+    loadBtn.textContent = classifyMappingState.isLoading ? '正在加载...' : '加载映射工作台';
+  }
+  if (resetBtn) {
+    resetBtn.disabled = !classifyMappingState.loaded || controlsLocked || !hasChanges;
+  }
+  if (applyBtn) {
+    applyBtn.disabled = !classifyMappingState.loaded || controlsLocked || !hasChanges;
+    applyBtn.textContent = classifyMappingState.isApplying ? '正在应用...' : '应用映射';
+  }
+}
+
+function applyClassifyMappingWorkspace(workspace = {}, options = {}) {
+  const preserveSelection = options.preserveSelection !== false;
+  const previousSelected = preserveSelection ? classifyMappingState.selectedSourceLabel : '';
+  const nextSourceLabels = Array.isArray(workspace.source_labels)
+    ? workspace.source_labels.map(normalizeClassifyMappingItem).filter(item => item.source_label)
+    : [];
+  const nextInitialMappings = {};
+
+  nextSourceLabels.forEach(item => {
+    if (!item.is_identity && item.target_category) {
+      nextInitialMappings[item.source_label] = item.target_category;
+    }
+  });
+
+  classifyMappingState.outputDir = String(workspace.output_dir || classifyMappingState.outputDir || '');
+  classifyMappingState.sourceLabels = nextSourceLabels;
+  classifyMappingState.initialMappings = nextInitialMappings;
+  classifyMappingState.draftMappings = { ...nextInitialMappings };
+  classifyMappingState.summary = workspace.summary && typeof workspace.summary === 'object'
+    ? workspace.summary
+    : {
+        total_images: 0,
+        total_source_labels: 0,
+        mapped_source_labels: 0,
+        unmapped_source_labels: 0,
+        mapped_images: 0,
+        unmapped_images: 0,
+      };
+  classifyMappingState.loaded = true;
+  classifyMappingState.previewItems = [];
+
+  const preferredSelection = nextSourceLabels.find(item => item.source_label === previousSelected)?.source_label
+    || nextSourceLabels.find(item => !item.is_identity && !getClassifyMappingDraftTarget(item))?.source_label
+    || nextSourceLabels[0]?.source_label
+    || '';
+  classifyMappingState.selectedSourceLabel = preferredSelection;
+
+  const outputInput = document.getElementById('cm-output-dir');
+  if (outputInput && classifyMappingState.outputDir) {
+    outputInput.value = classifyMappingState.outputDir;
+  }
+
+  renderClassifyMappingPanel();
+  if (classifyMappingState.selectedSourceLabel) {
+    loadClassifyMappingPreview({ silent: true });
+  }
+}
+
+function prepareClassifyMappingTab() {
+  const outputInput = document.getElementById('cm-output-dir');
+  const classifyOutputDir = document.getElementById('cl-output-dir')?.value.trim() || classifyReviewState.outputDir || '';
+  if (outputInput && !outputInput.value.trim() && classifyOutputDir) {
+    outputInput.value = classifyOutputDir;
+  }
+  renderClassifyMappingPanel();
+}
+
+function loadClassifyMappingWorkspace(options = {}) {
+  const preserveSelection = options.preserveSelection !== false;
+  const outputInput = document.getElementById('cm-output-dir');
+  const outputDir = outputInput?.value.trim() || document.getElementById('cl-output-dir')?.value.trim() || '';
+  if (!outputDir) {
+    alert('请先填写分类输出目录');
+    return;
+  }
+
+  classifyMappingState.isLoading = true;
+  renderClassifyMappingPanel();
+
+  fetch('/classify/mapping/load', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ output_dir: outputDir }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      applyClassifyMappingWorkspace(d, { preserveSelection });
+      cmLog(`已加载映射工作台：${d.summary?.total_source_labels || 0} 个源标签，待处理 ${d.summary?.unmapped_source_labels || 0} 个`, 'text-gray-400');
+    })
+    .catch(err => {
+      alert(err.message || '加载映射工作台失败');
+    })
+    .finally(() => {
+      classifyMappingState.isLoading = false;
+      renderClassifyMappingPanel();
+    });
+}
+
+function loadClassifyMappingPreview(options = {}) {
+  const silent = Boolean(options.silent);
+  const item = getClassifyMappingSelectedItem();
+  if (!item || !classifyMappingState.outputDir) {
+    classifyMappingState.previewItems = [];
+    classifyMappingState.previewLoading = false;
+    renderClassifyMappingPreview();
+    return;
+  }
+
+  const requestLabel = item.source_label;
+  classifyMappingState.previewLoading = true;
+  renderClassifyMappingPreview();
+
+  fetch('/classify/mapping/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      output_dir: classifyMappingState.outputDir,
+      source_label: requestLabel,
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      if (normalizeCatalogBoxType(d.source_label || '') !== classifyMappingState.selectedSourceLabel) return;
+      classifyMappingState.previewItems = Array.isArray(d.items) ? d.items : [];
+      if (!silent) {
+        cmLog(`已加载 ${requestLabel} 的 ${classifyMappingState.previewItems.length} 张样例图`, 'text-gray-400');
+      }
+    })
+    .catch(err => {
+      if (!silent) {
+        alert(err.message || '加载样例图失败');
+      }
+      classifyMappingState.previewItems = [];
+    })
+    .finally(() => {
+      classifyMappingState.previewLoading = false;
+      renderClassifyMappingPreview();
+    });
+}
+
+function selectClassifyMappingSourceLabel(sourceLabel) {
+  const normalized = normalizeCatalogBoxType(sourceLabel);
+  if (!normalized || normalized === classifyMappingState.selectedSourceLabel) return;
+  classifyMappingState.selectedSourceLabel = normalized;
+  classifyMappingState.previewItems = [];
+  renderClassifyMappingPanel();
+  loadClassifyMappingPreview({ silent: true });
+}
+
+function assignSelectedClassifyMapping(targetCategory) {
+  const selectedItem = getClassifyMappingSelectedItem();
+  const normalizedTarget = normalizeCatalogBoxType(targetCategory);
+  if (!selectedItem) {
+    alert('请先选中一个源标签');
+    return;
+  }
+  if (selectedItem.is_identity) {
+    alert('这个源标签本身就是 7 大品类，不需要额外映射');
+    return;
+  }
+  if (!normalizedTarget) return;
+  if (getClassifyMappingDraftTarget(selectedItem) === normalizedTarget) return;
+
+  classifyMappingState.draftMappings = {
+    ...classifyMappingState.draftMappings,
+    [selectedItem.source_label]: normalizedTarget,
+  };
+  renderClassifyMappingPanel();
+}
+
+function resetClassifyMappingDraft() {
+  if (!classifyMappingState.loaded) return;
+  classifyMappingState.draftMappings = { ...classifyMappingState.initialMappings };
+  renderClassifyMappingPanel();
+  cmLog('已撤销本次未应用的映射调整', 'text-gray-400');
+}
+
+function buildClassifyMappingApplyPayload() {
+  const mappings = {};
+  classifyMappingState.sourceLabels.forEach(item => {
+    const targetCategory = getClassifyMappingDraftTarget(item);
+    if (!item.is_identity && targetCategory) {
+      mappings[item.source_label] = targetCategory;
+    }
+  });
+  return mappings;
+}
+
+function applyClassifyMappingDraft() {
+  if (!classifyMappingState.loaded || !classifyMappingState.outputDir) {
+    alert('请先加载映射工作台');
+    return;
+  }
+  if (!hasClassifyMappingPendingChanges()) {
+    alert('当前没有新的映射调整需要应用');
+    return;
+  }
+
+  classifyMappingState.isApplying = true;
+  renderClassifyMappingPanel();
+
+  fetch('/classify/mapping/apply', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      output_dir: classifyMappingState.outputDir,
+      mappings: buildClassifyMappingApplyPayload(),
+    }),
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) throw new Error(d.error);
+      applyClassifyMappingWorkspace(d.workspace || {}, { preserveSelection: true });
+      cmLog(`已应用 ${d.mapping_count || 0} 条目录映射，受影响图片 ${d.affected_image_count || 0} 张`, 'text-emerald-300');
+      if (Number(d.deleted_sidecar_count || 0) > 0) {
+        cmLog(`已删除 ${d.deleted_sidecar_count} 个旧语义 sidecar，并重建语义索引`, 'text-amber-300');
+      }
+      cmLog(`当前语义索引：合法 ${d.stats?.valid || 0} · 非法 ${d.stats?.invalid || 0} · 缺失 ${d.stats?.missing || 0}`, 'text-gray-400');
+    })
+    .catch(err => {
+      alert(err.message || '应用映射失败');
+    })
+    .finally(() => {
+      classifyMappingState.isApplying = false;
+      renderClassifyMappingPanel();
     });
 }
 

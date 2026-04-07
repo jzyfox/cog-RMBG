@@ -4,6 +4,7 @@ import argparse
 import copy
 import io
 import os
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,9 @@ KNOWN_CATEGORY_SUFFIXES: tuple[str, ...] = tuple(sorted({
     for canonical, aliases in CATEGORY_ALIASES.items()
     for value in (canonical, *aliases)
 }, key=len, reverse=True))
+_TOKEN_SEPARATOR_RE = re.compile(r"[\s\-]+")
+_TOKEN_INVALID_CHAR_RE = re.compile(r"[^a-z0-9_]+")
+_TOKEN_REPEAT_UNDERSCORE_RE = re.compile(r"_+")
 
 DEFAULT_CATALOG_LAYOUT: dict = {
     "canvas_width": DEFAULT_CANVAS_WIDTH,
@@ -192,8 +196,8 @@ def build_catalog_grids(
         ignored_types: dict[str, int] = {}
 
         for file_path in files:
-            raw_category = _parse_category(file_path.stem)
-            category = normalize_catalog_type(raw_category)
+            raw_category = _parse_category(file_path.stem, category_names=accepted_types)
+            category = normalize_catalog_token(raw_category)
             stats["scanned"] += 1
 
             if category not in accepted_types:
@@ -387,7 +391,7 @@ def normalize_layout_config(layout: dict | None) -> dict:
         raw_type = str(row.get("type", "")).strip().lower()
         if not raw_type:
             raise ValueError("box type cannot be empty")
-        box_type = normalize_catalog_type(raw_type)
+        box_type = normalize_catalog_token(raw_type)
         if box_type in seen_types:
             raise ValueError(f"duplicate box type: {box_type}")
 
@@ -415,7 +419,7 @@ def normalize_layout_config(layout: dict | None) -> dict:
         allowed_types: list[str] = []
         seen_allowed: set[str] = set()
         for raw_allowed in raw_allowed_types:
-            normalized_allowed = normalize_catalog_type(str(raw_allowed or "").strip().lower())
+            normalized_allowed = normalize_catalog_token(str(raw_allowed or "").strip().lower())
             if not normalized_allowed or normalized_allowed == "default":
                 continue
             if normalized_allowed == box_type or normalized_allowed in seen_allowed:
@@ -440,28 +444,57 @@ def normalize_layout_config(layout: dict | None) -> dict:
     }
 
 
-def normalize_catalog_type(type_name: str) -> str:
+def normalize_catalog_token(type_name: str) -> str:
     normalized = str(type_name or "").strip().lower()
     if not normalized:
         return "default"
+    normalized = _TOKEN_SEPARATOR_RE.sub("_", normalized)
+    normalized = _TOKEN_INVALID_CHAR_RE.sub("_", normalized)
+    normalized = _TOKEN_REPEAT_UNDERSCORE_RE.sub("_", normalized).strip("_")
+    return normalized or "default"
+
+
+def normalize_catalog_type(type_name: str) -> str:
+    normalized = normalize_catalog_token(type_name)
+    if not normalized or normalized == "default":
+        return "default"
     for canonical, aliases in CATEGORY_ALIASES.items():
-        if normalized == canonical or normalized in aliases:
+        normalized_aliases = {normalize_catalog_token(alias) for alias in aliases}
+        if normalized == canonical or normalized in normalized_aliases:
             return canonical
     return normalized
 
 
-def parse_catalog_category_from_stem(stem: str) -> str:
-    normalized_stem = str(stem or "").strip().lower()
+def _collect_catalog_suffixes(
+    category_names: list[str] | tuple[str, ...] | set[str] | None = None,
+    extra_suffixes: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> list[str]:
+    suffixes = {normalize_catalog_token(value) for value in KNOWN_CATEGORY_SUFFIXES}
+    for values in (category_names or (), extra_suffixes or ()):
+        for value in values:
+            normalized = normalize_catalog_token(value)
+            if not normalized or normalized == "default":
+                continue
+            suffixes.add(normalized)
+    return sorted(suffixes, key=len, reverse=True)
+
+
+def parse_catalog_category_from_stem(
+    stem: str,
+    category_names: list[str] | tuple[str, ...] | set[str] | None = None,
+    extra_suffixes: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str:
+    normalized_stem = normalize_catalog_token(stem)
     if not normalized_stem:
         return "default"
 
-    for suffix in KNOWN_CATEGORY_SUFFIXES:
+    for suffix in _collect_catalog_suffixes(category_names, extra_suffixes):
         if normalized_stem == suffix or normalized_stem.endswith(f"_{suffix}"):
-            return normalize_catalog_type(suffix)
+            return suffix
 
     if "_" not in normalized_stem:
         return "default"
-    return normalize_catalog_type(normalized_stem.rsplit("_", 1)[-1])
+    return normalize_catalog_token(normalized_stem.rsplit("_", 1)[-1])
 
 
 def strip_catalog_category_suffix(
@@ -470,20 +503,9 @@ def strip_catalog_category_suffix(
     extra_suffixes: list[str] | tuple[str, ...] | set[str] | None = None,
 ) -> str:
     original = str(stem or "")
-    lowered = original.lower()
-    suffixes = set(KNOWN_CATEGORY_SUFFIXES)
+    lowered = normalize_catalog_token(original)
 
-    for values in (category_names or (), extra_suffixes or ()):
-        for value in values:
-            raw = str(value or "").strip().lower()
-            if not raw:
-                continue
-            suffixes.add(raw)
-            normalized = normalize_catalog_type(raw)
-            if normalized and normalized != "default":
-                suffixes.add(normalized)
-
-    for suffix in sorted(suffixes, key=len, reverse=True):
+    for suffix in _collect_catalog_suffixes(category_names, extra_suffixes):
         token = f"_{suffix}"
         if lowered.endswith(token):
             trimmed = original[:-len(token)]
@@ -493,7 +515,9 @@ def strip_catalog_category_suffix(
 
 def build_classified_catalog_name(base_stem: str, category: str, suffix: str) -> str:
     normalized_base_stem = str(base_stem or "").strip() or "item"
-    normalized_category = str(category or "").strip().lower() or "uncertain"
+    normalized_category = normalize_catalog_token(category)
+    if normalized_category == "default":
+        normalized_category = "uncertain"
     return f"{normalized_base_stem}_{normalized_category}{suffix}"
 
 
@@ -944,7 +968,7 @@ def _prepare_manifest_items(items: list[dict]) -> dict[str, list[PreparedItem]]:
         if not isinstance(item, dict):
             raise ValueError("Each manifest item must be an object")
 
-        category = normalize_catalog_type(item.get("category"))
+        category = normalize_catalog_token(item.get("category"))
         image_path_value = item.get("image_path") or item.get("source_image_path")
         if not image_path_value:
             raise ValueError("Each manifest item must include image_path")
@@ -990,8 +1014,11 @@ def _discover_package_files(input_dir: Path) -> list[tuple[str, list[Path]]]:
     return []
 
 
-def _parse_category(stem: str) -> str:
-    return parse_catalog_category_from_stem(stem)
+def _parse_category(
+    stem: str,
+    category_names: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str:
+    return parse_catalog_category_from_stem(stem, category_names=category_names)
 
 
 def _normalize_output_dir(output_target: str | Path) -> tuple[Path, bool]:

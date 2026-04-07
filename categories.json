@@ -1,0 +1,30 @@
+[
+  {
+    "name": "sofa",
+    "prompt": "a product photo of a sofa or couch with cushions"
+  },
+  {
+    "name": "bed",
+    "prompt": "a product photo of a bed with headboard and mattress"
+  },
+  {
+    "name": "lounge_chair",
+    "prompt": "a product photo of a lounge chair or armchair or accent chair"
+  },
+  {
+    "name": "dining_chair",
+    "prompt": "a product photo of a dining chair without armrests"
+  },
+  {
+    "name": "coffee_table",
+    "prompt": "a product photo of a low coffee table or side table"
+  },
+  {
+    "name": "dining_table",
+    "prompt": "a product photo of a dining table or desk"
+  },
+  {
+    "name": "cabinet",
+    "prompt": "a product photo of a cabinet, sideboard, wardrobe or TV console"
+  }
+]

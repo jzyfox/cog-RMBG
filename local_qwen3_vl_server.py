@@ -36,13 +36,13 @@ _MODEL_DIR: Path | None = None
 _GENERATION_LOCK = threading.Lock()
 
 
-class SemanticTagRequest(BaseModel):
+class GenerateRequest(BaseModel):
     image_data_url: str
     prompt: str
     model: str | None = None
 
 
-class SemanticTagResponse(BaseModel):
+class GenerateResponse(BaseModel):
     text: str
     model: str
 
@@ -164,8 +164,7 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.post("/semantic-tag", response_model=SemanticTagResponse)
-def semantic_tag(payload: SemanticTagRequest) -> SemanticTagResponse:
+def _handle_generate(payload: GenerateRequest) -> GenerateResponse:
     if not payload.image_data_url.strip():
         raise HTTPException(status_code=400, detail="image_data_url is required")
     if not payload.prompt.strip():
@@ -179,4 +178,14 @@ def semantic_tag(payload: SemanticTagRequest) -> SemanticTagResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return SemanticTagResponse(text=text, model=MODEL_NAME)
+    return GenerateResponse(text=text, model=MODEL_NAME)
+
+
+@app.post("/generate", response_model=GenerateResponse)
+def generate(payload: GenerateRequest) -> GenerateResponse:
+    return _handle_generate(payload)
+
+
+@app.post("/semantic-tag", response_model=GenerateResponse)
+def semantic_tag(payload: GenerateRequest) -> GenerateResponse:
+    return _handle_generate(payload)
