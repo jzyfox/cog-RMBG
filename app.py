@@ -50,6 +50,7 @@ from semantic_bundle_builder import (
     build_bundle_candidates,
     delete_all_bundle_candidates,
     delete_bundle_candidate,
+    ensure_bundle_primary_style_available,
     load_bundle_pool,
     load_bundle_review_data,
     regenerate_bundle_candidate,
@@ -1835,6 +1836,7 @@ def start_bundle():
     data = request.json or {}
     input_dir = data.get("input_dir", "").strip()
     generation_strategy = str(data.get("generation_strategy", DEFAULT_BUNDLE_GENERATION_STRATEGY)).strip().lower()
+    primary_style = data.get("primary_style", "")
 
     try:
         target_count = int(data.get("target_count", DEFAULT_BUNDLE_TARGET_COUNT))
@@ -1845,11 +1847,15 @@ def start_bundle():
         return {"error": "请填写输入目录"}, 400
     if generation_strategy not in BUNDLE_GENERATION_STRATEGIES:
         return {"error": "生成策略不合法"}, 400
+    try:
+        primary_style = ensure_bundle_primary_style_available(input_dir=input_dir, primary_style=primary_style)
+    except Exception as exc:
+        return {"error": str(exc)}, 400
 
     _drain(_bundle_queue)
     threading.Thread(
         target=_run_bundle,
-        args=(input_dir, target_count, generation_strategy),
+        args=(input_dir, target_count, generation_strategy, primary_style),
         daemon=True,
     ).start()
     return {"status": "started"}
@@ -2489,6 +2495,7 @@ def _run_bundle(
     input_dir: str,
     target_count: int,
     generation_strategy: str,
+    primary_style: str | None,
 ) -> None:
     global _bundle_processing
 
@@ -2501,6 +2508,7 @@ def _run_bundle(
             input_dir=input_dir,
             target_count=target_count,
             generation_strategy=generation_strategy,
+            primary_style=primary_style,
             progress_callback=_emit,
         )
         _bundle_queue.put({"type": "done", **summary})

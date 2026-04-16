@@ -604,7 +604,12 @@
                 <label class="text-sm text-gray-300">生成策略</label>
                 <select id="bundle-generation-strategy"></select>
               </div>
+              <div class="flex flex-col gap-1.5">
+                <label class="text-sm text-gray-300">主风格</label>
+                <select id="bundle-primary-style-filter"></select>
+              </div>
             </div>
+            <div class="text-xs text-gray-500">仅作用于“开始自动生成”；选择后整套 7 个品类都必须命中该主风格。</div>
           </div>
           <div class="flex gap-3 flex-wrap">
             <button id="bundle-start-btn" onclick="startBundleGeneration()" class="bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white font-medium rounded-xl px-6 py-3 text-sm transition flex items-center justify-center gap-2">
@@ -4805,6 +4810,15 @@ function getBundleGenerationStrategyLabel(value) {
   return (DEFAULT_BUNDLE_CONFIG.generation_strategy_labels || {})[normalized] || normalized || '-';
 }
 
+function getBundlePrimaryStyleOptions() {
+  return Array.isArray(DEFAULT_BUNDLE_CONFIG.primary_style_options) ? DEFAULT_BUNDLE_CONFIG.primary_style_options : [];
+}
+
+function getBundlePrimaryStyleFilterLabel(value) {
+  const normalized = String(value || '').trim();
+  return normalized || '不限风格';
+}
+
 function getBundleImagePreviewUrl(path) {
   return `/semantic/image?path=${encodeURIComponent(path)}`;
 }
@@ -4860,6 +4874,7 @@ function normalizeBundleRecord(bundle = {}) {
     cluster_key: String(bundle.cluster_key || ''),
     anchor_category: String(bundle.anchor_category || ''),
     anchor_image_path: String(bundle.anchor_image_path || ''),
+    primary_style_filter: String(bundle.primary_style_filter || '').trim(),
     locked_categories: Array.isArray(bundle.locked_categories) ? bundle.locked_categories.map(item => String(item || '').trim()).filter(Boolean) : [],
     items: Array.isArray(bundle.items) ? bundle.items.map(normalizeBundleItem) : [],
     created_at: String(bundle.created_at || ''),
@@ -5178,6 +5193,15 @@ function renderBundleList() {
         <span class="text-[11px] px-2 py-0.5 rounded-full border ${meta.classes}">${meta.label}</span>
       </div>
     `;
+    if (bundle.primary_style_filter) {
+      const metaBlock = button.querySelector('.min-w-0');
+      if (metaBlock) {
+        const styleLine = document.createElement('div');
+        styleLine.className = 'text-[11px] text-amber-300 mt-1 truncate';
+        styleLine.textContent = `主风格筛选：${bundle.primary_style_filter}`;
+        metaBlock.appendChild(styleLine);
+      }
+    }
     button.addEventListener('click', () => {
       bundleState.selectedBundleId = bundle.bundle_id;
       renderBundlePanel();
@@ -5199,11 +5223,19 @@ function renderBundleDetail() {
 
   empty.classList.add('hidden');
   detail.classList.remove('hidden');
+  const selectedMetaParts = [
+    bundle.bundle_id,
+    `cluster ${bundle.cluster_key || '-'}`,
+  ];
+  if (bundle.primary_style_filter) {
+    selectedMetaParts.push(`主风格筛选 ${bundle.primary_style_filter}`);
+  }
+  selectedMetaParts.push(`updated ${bundle.updated_at || '-'}`);
   document.getElementById('bundle-detail-mode').textContent = getBundleModeLabel(bundle.generation_mode);
   document.getElementById('bundle-detail-status').textContent = bundle.status;
   document.getElementById('bundle-detail-score').textContent = bundle.score.toFixed(2);
   document.getElementById('bundle-detail-anchor').textContent = `${getBundleCategoryLabel(bundle.anchor_category)} · ${bundle.anchor_image_path}`;
-  document.getElementById('bundle-selected-meta').textContent = `${bundle.bundle_id} · cluster ${bundle.cluster_key || '-'} · updated ${bundle.updated_at || '-'}`;
+  document.getElementById('bundle-selected-meta').textContent = selectedMetaParts.join(' · ');
 
   const grid = document.getElementById('bundle-item-grid');
   grid.innerHTML = '';
@@ -5389,6 +5421,7 @@ function startBundleGeneration() {
   const inputDir = document.getElementById('bundle-input-dir').value.trim();
   const targetCount = parseInt(document.getElementById('bundle-target-count').value, 10);
   const generationStrategy = document.getElementById('bundle-generation-strategy').value;
+  const primaryStyle = document.getElementById('bundle-primary-style-filter')?.value.trim() || '';
   if (!inputDir) {
     alert('请填写输入目录');
     return;
@@ -5408,7 +5441,12 @@ function startBundleGeneration() {
   fetch('/bundle/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ input_dir: inputDir, target_count: targetCount, generation_strategy: generationStrategy }),
+    body: JSON.stringify({
+      input_dir: inputDir,
+      target_count: targetCount,
+      generation_strategy: generationStrategy,
+      primary_style: primaryStyle,
+    }),
   })
     .then(r => r.json())
     .then(d => {
@@ -5435,6 +5473,7 @@ function listenBundle() {
         `当前模式：${getBundleGenerationStrategyLabel(msg.generation_strategy)}${msg.run_seed ? ` · seed ${msg.run_seed}` : ''}`,
         'text-gray-500',
       );
+      bundleLog(`主风格：${getBundlePrimaryStyleFilterLabel(msg.primary_style)}`, 'text-gray-500');
       if (Array.isArray(msg.anchor_categories) && msg.anchor_categories.length) {
         bundleLog(`锚点品类：${msg.anchor_categories.map(getBundleCategoryLabel).join(' / ')}`, 'text-gray-500');
       }
@@ -5748,6 +5787,7 @@ function renderAcceptedBundles() {
 function initializeBundleUI() {
   const categorySelect = document.getElementById('bundle-pool-category');
   const strategySelect = document.getElementById('bundle-generation-strategy');
+  const primaryStyleSelect = document.getElementById('bundle-primary-style-filter');
   categorySelect.innerHTML = '<option value="all">全部品类</option>';
   getBundleCategories().forEach(category => {
     const option = document.createElement('option');
@@ -5763,6 +5803,16 @@ function initializeBundleUI() {
     strategySelect.appendChild(option);
   });
   strategySelect.value = DEFAULT_BUNDLE_CONFIG.default_generation_strategy || 'true_random';
+  if (primaryStyleSelect) {
+    primaryStyleSelect.innerHTML = '<option value="">不限风格</option>';
+    getBundlePrimaryStyleOptions().forEach(style => {
+      const option = document.createElement('option');
+      option.value = style;
+      option.textContent = style;
+      primaryStyleSelect.appendChild(option);
+    });
+    primaryStyleSelect.value = String(DEFAULT_BUNDLE_CONFIG.default_primary_style || '');
+  }
   categorySelect.addEventListener('change', () => loadBundlePool({ silent: true }));
 
   const seedSlot = document.getElementById('bundle-seed-slot');

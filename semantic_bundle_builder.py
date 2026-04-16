@@ -19,6 +19,7 @@ from asset_catalog_grid import (
 from semantic_tagger import (
     SEMANTIC_CATEGORY_LABELS,
     SEMANTIC_INDEX_FILE,
+    STYLE_OPTIONS,
     rebuild_semantic_indices,
 )
 
@@ -79,6 +80,8 @@ BUNDLE_FRONTEND_CONFIG = {
     "default_seed_candidate_count": DEFAULT_SEED_CANDIDATE_COUNT,
     "generation_strategy_options": ["true_random", "pseudo_random"],
     "default_generation_strategy": DEFAULT_BUNDLE_GENERATION_STRATEGY,
+    "primary_style_options": list(STYLE_OPTIONS),
+    "default_primary_style": "",
     "generation_strategy_labels": {
         "true_random": "真随机",
         "pseudo_random": "假随机",
@@ -91,11 +94,13 @@ def build_bundle_candidates(
     input_dir: str | Path,
     target_count: int = DEFAULT_BUNDLE_TARGET_COUNT,
     generation_strategy: str = DEFAULT_BUNDLE_GENERATION_STRATEGY,
+    primary_style: str | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict:
     input_root = _resolve_input_root(input_dir)
     target_count = _coerce_positive_int(target_count, "target_count")
     generation_strategy = _normalize_generation_strategy(generation_strategy)
+    primary_style = normalize_bundle_primary_style_filter(primary_style)
 
     semantic_records = _load_semantic_records(input_root, refresh=True)
     base_pool_by_category = _group_semantic_records(semantic_records)
@@ -107,6 +112,7 @@ def build_bundle_candidates(
     auto_generation = _prepare_auto_generation(
         pool_by_category=base_pool_by_category,
         generation_strategy=generation_strategy,
+        primary_style=primary_style,
     )
     pool_by_category = auto_generation["pool_by_category"]
     anchors = auto_generation["anchors"]
@@ -126,6 +132,7 @@ def build_bundle_candidates(
         "input_dir": str(input_root),
         "target_count": target_count,
         "generation_strategy": generation_strategy,
+        "primary_style": primary_style,
         "run_seed": run_seed,
         "anchor_categories": anchor_categories,
         "pool_counts": pool_counts,
@@ -163,6 +170,7 @@ def build_bundle_candidates(
                 beam_width=AUTO_BEAM_WIDTH,
                 locked_categories=[anchor["category"]],
                 candidate_priority=candidate_priority,
+                primary_style_filter=primary_style,
             )
             if not variants:
                 anchor_key = str(anchor["source_image_path"])
@@ -224,6 +232,7 @@ def build_bundle_candidates(
         "input_dir": str(input_root),
         "target_count": target_count,
         "generation_strategy": generation_strategy,
+        "primary_style": primary_style,
         "run_seed": run_seed,
         "anchor_categories": anchor_categories,
         "generated_count": len(new_bundles),
@@ -525,10 +534,24 @@ def regenerate_bundle_candidate(
     if not anchor_record:
         raise ValueError("Anchor image no longer has a valid semantic tag")
 
+    primary_style_filter = (
+        normalize_bundle_primary_style_filter(current.get("primary_style_filter"))
+        if current["generation_mode"] == "auto"
+        else None
+    )
+    filtered_pool_by_category = pool_by_category
+    if primary_style_filter:
+        filtered_pool_by_category, missing_categories = _build_primary_style_filtered_pool(
+            pool_by_category,
+            primary_style_filter,
+        )
+        if missing_categories:
+            raise RuntimeError(_format_primary_style_shortage_message(primary_style_filter, missing_categories))
+
     variants = _generate_bundle_variants(
         anchor_record=anchor_record,
         generation_mode=current["generation_mode"],
-        pool_by_category=pool_by_category,
+        pool_by_category=filtered_pool_by_category,
         existing_signatures=existing_signatures,
         reuse_counts=reuse_counts,
         max_results=24 if current["generation_mode"] == "seeded" else 8,
@@ -537,6 +560,7 @@ def regenerate_bundle_candidate(
         locked_categories=current.get("locked_categories") or [current["anchor_category"]],
         bundle_id=current["bundle_id"],
         created_at=current.get("created_at"),
+        primary_style_filter=primary_style_filter,
     )
     if not variants:
         raise RuntimeError("Could not regenerate a new non-duplicate bundle from the current anchor")
@@ -644,6 +668,35 @@ def bundle_signature(bundle: dict[str, Any]) -> str:
     return "||".join(item_map.get(category, "") for category in BUNDLE_CATEGORIES)
 
 
+def normalize_bundle_primary_style_filter(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    if normalized not in STYLE_OPTIONS:
+        raise ValueError(f"Unsupported bundle primary_style: {value}")
+    return normalized
+
+
+def ensure_bundle_primary_style_available(
+    input_dir: str | Path,
+    primary_style: Any = None,
+) -> str | None:
+    input_root = _resolve_input_root(input_dir)
+    normalized_primary_style = normalize_bundle_primary_style_filter(primary_style)
+    if not normalized_primary_style:
+        return None
+
+    semantic_records = _load_semantic_records(input_root, refresh=True)
+    pool_by_category = _group_semantic_records(semantic_records)
+    _, missing_categories = _build_primary_style_filtered_pool(
+        pool_by_category,
+        normalized_primary_style,
+    )
+    if missing_categories:
+        raise ValueError(_format_primary_style_shortage_message(normalized_primary_style, missing_categories))
+    return normalized_primary_style
+
+
 def _normalize_generation_strategy(value: str | None) -> str:
     normalized = str(value or DEFAULT_BUNDLE_GENERATION_STRATEGY).strip().lower()
     if normalized not in BUNDLE_GENERATION_STRATEGIES:
@@ -654,15 +707,23 @@ def _normalize_generation_strategy(value: str | None) -> str:
 def _prepare_auto_generation(
     pool_by_category: dict[str, list[dict[str, Any]]],
     generation_strategy: str,
+    primary_style: str | None = None,
 ) -> dict[str, Any]:
     normalized_strategy = _normalize_generation_strategy(generation_strategy)
+    normalized_primary_style = normalize_bundle_primary_style_filter(primary_style)
+    filtered_pool_by_category, missing_categories = _build_primary_style_filtered_pool(
+        pool_by_category,
+        normalized_primary_style,
+    )
+    if normalized_primary_style and missing_categories:
+        raise ValueError(_format_primary_style_shortage_message(normalized_primary_style, missing_categories))
     if normalized_strategy == "pseudo_random":
         return {
             "pool_by_category": {
-                category: list(pool_by_category.get(category, []))
+                category: list(filtered_pool_by_category.get(category, []))
                 for category in BUNDLE_CATEGORIES
             },
-            "anchors": list(pool_by_category.get(AUTO_ANCHOR_CATEGORY, [])),
+            "anchors": list(filtered_pool_by_category.get(AUTO_ANCHOR_CATEGORY, [])),
             "anchor_categories": [AUTO_ANCHOR_CATEGORY],
             "run_seed": None,
             "candidate_priority": None,
@@ -674,7 +735,7 @@ def _prepare_auto_generation(
     candidate_priority: dict[str, int] = {}
 
     for category in BUNDLE_CATEGORIES:
-        records = list(pool_by_category.get(category, []))
+        records = list(filtered_pool_by_category.get(category, []))
         rng.shuffle(records)
         randomized_pool[category] = records
         for index, record in enumerate(records):
@@ -969,6 +1030,11 @@ def _normalize_bundle(
         if generation_mode == "auto"
         else str(raw.get("cluster_key") or _cluster_key(item_map[anchor_category]["semantic_tag"], anchor_category))
     )
+    primary_style_filter = (
+        normalize_bundle_primary_style_filter(raw.get("primary_style_filter"))
+        if generation_mode == "auto"
+        else None
+    )
     return {
         "bundle_id": bundle_id,
         "generation_mode": generation_mode,
@@ -977,6 +1043,7 @@ def _normalize_bundle(
         "cluster_key": normalized_cluster_key,
         "anchor_category": anchor_category,
         "anchor_image_path": anchor_image_path,
+        "primary_style_filter": primary_style_filter,
         "locked_categories": [category for category in BUNDLE_CATEGORIES if category in locked_categories],
         "items": ordered_items,
         "created_at": str(raw.get("created_at") or _now_iso()),
@@ -1024,10 +1091,18 @@ def _generate_bundle_variants(
     candidate_priority: dict[str, int] | None = None,
     bundle_id: str | None = None,
     created_at: str | None = None,
+    primary_style_filter: str | None = None,
 ) -> list[dict[str, Any]]:
     anchor_category = anchor_record["category"]
     fill_categories = [category for category in BUNDLE_CATEGORIES if category != anchor_category]
     anchor_path = str(anchor_record["source_image_path"])
+    normalized_primary_style_filter = normalize_bundle_primary_style_filter(primary_style_filter)
+
+    if (
+        normalized_primary_style_filter
+        and str(anchor_record.get("primary_style") or "").strip() != normalized_primary_style_filter
+    ):
+        return []
 
     partials = [{
         "selected": {anchor_category: anchor_record},
@@ -1043,6 +1118,11 @@ def _generate_bundle_variants(
             for candidate in pool_by_category.get(category, []):
                 candidate_path = str(candidate["source_image_path"])
                 if candidate_path in partial["used_paths"]:
+                    continue
+                if (
+                    normalized_primary_style_filter
+                    and str(candidate.get("primary_style") or "").strip() != normalized_primary_style_filter
+                ):
                     continue
                 if reuse_counts[candidate_path] >= REUSE_LIMITS[category]:
                     continue
@@ -1109,6 +1189,7 @@ def _generate_bundle_variants(
             items=items,
             bundle_id=bundle_id,
             created_at=created_at,
+            primary_style_filter=normalized_primary_style_filter,
         )
         signature = bundle_signature(bundle)
         if signature in existing_signatures or signature in seen_signatures:
@@ -1187,6 +1268,7 @@ def _build_bundle_record(
     items: list[dict[str, Any]],
     bundle_id: str | None = None,
     created_at: str | None = None,
+    primary_style_filter: str | None = None,
 ) -> dict[str, Any]:
     now = _now_iso()
     return {
@@ -1197,6 +1279,7 @@ def _build_bundle_record(
         "cluster_key": _cluster_key(anchor_record, anchor_record["category"]),
         "anchor_category": anchor_record["category"],
         "anchor_image_path": str(anchor_record["source_image_path"]),
+        "primary_style_filter": normalize_bundle_primary_style_filter(primary_style_filter),
         "locked_categories": [category for category in BUNDLE_CATEGORIES if category in set(locked_categories)],
         "items": items,
         "created_at": str(created_at or now),
@@ -1363,6 +1446,7 @@ def _prepare_bundle_for_persist(bundle: dict[str, Any]) -> dict[str, Any]:
         "cluster_key": bundle["cluster_key"],
         "anchor_category": bundle["anchor_category"],
         "anchor_image_path": bundle["anchor_image_path"],
+        "primary_style_filter": normalize_bundle_primary_style_filter(bundle.get("primary_style_filter")),
         "locked_categories": list(bundle["locked_categories"]),
         "items": [
             {
@@ -1439,6 +1523,38 @@ def _normalize_bundle_category(value: Any) -> str:
     if normalized not in BUNDLE_CATEGORY_SET:
         raise ValueError(f"Unsupported bundle category: {value}")
     return normalized
+
+
+def _build_primary_style_filtered_pool(
+    pool_by_category: dict[str, list[dict[str, Any]]],
+    primary_style: str | None,
+) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
+    normalized_primary_style = normalize_bundle_primary_style_filter(primary_style)
+    filtered_pool_by_category: dict[str, list[dict[str, Any]]] = {}
+    for category in BUNDLE_CATEGORIES:
+        records = list(pool_by_category.get(category, []))
+        if normalized_primary_style:
+            records = [
+                record
+                for record in records
+                if str(record.get("primary_style") or "").strip() == normalized_primary_style
+            ]
+        filtered_pool_by_category[category] = records
+
+    missing_categories = [
+        category
+        for category in BUNDLE_CATEGORIES
+        if normalized_primary_style and not filtered_pool_by_category.get(category)
+    ]
+    return filtered_pool_by_category, missing_categories
+
+
+def _format_primary_style_shortage_message(primary_style: str, missing_categories: list[str]) -> str:
+    labels = "、".join(
+        SEMANTIC_CATEGORY_LABELS.get(category, category)
+        for category in missing_categories
+    )
+    return f"所选主风格“{primary_style}”下缺少必需品类：{labels}"
 
 
 def _coerce_positive_int(value: Any, field_name: str) -> int:
